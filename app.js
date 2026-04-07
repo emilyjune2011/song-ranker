@@ -114,6 +114,11 @@ async function api(pathOrUrl, options = {}) {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    if (res.status === 403) {
+      throw new Error(
+        "Spotify returned 403 (forbidden). New Spotify apps are usually in Development mode: only accounts added under User management in your app’s settings can sign in or use the API. Add your friend’s Spotify email there, or request Extended Quota for a public app — see developer.spotify.com/dashboard."
+      );
+    }
     throw new Error(err.error?.message || `${res.status} ${res.statusText}`);
   }
   return res.json();
