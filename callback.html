@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Signing in…</title>
+</head>
+<body>
+  <p style="font-family: system-ui; padding: 1rem;">Finishing sign-in… You can close this tab if nothing happens.</p>
+  <script>
+    (function () {
+      var q = window.location.search || "";
+      var h = window.location.hash || "";
+      var target = "index.html" + q + h;
+      window.location.replace(target);
+    })();
+  </script>
+</body>
+</html>

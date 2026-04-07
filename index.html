@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Song ranker</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <h1>Song ranker</h1>
+      <p class="tagline">Pick the better song until your list is sorted. Works with Spotify links.</p>
+    </header>
+
+    <section id="panel-setup" class="panel">
+      <h2>1. Connect Spotify</h2>
+      <p id="hint-connect" class="hint">
+        If this copy is <strong>hosted</strong>, the owner sets it up once; you only need your own Spotify account. Click
+        <strong>Sign in with Spotify</strong>. If you are the one deploying, add redirect URI
+        <code id="redirect-uri-display"></code> in the
+        <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify Developer Dashboard</a>
+        for your app (must match this page’s address exactly).
+      </p>
+      <div id="client-setup-block">
+        <p class="hint">
+          <strong>Local / no hosting:</strong> create an app in the dashboard, add the redirect URI above, paste your
+          Client ID here and save — or put it in <code>config.js</code> if you deploy.
+        </p>
+        <div class="row">
+          <label for="client-id">Client ID (optional if set in config.js)</label>
+          <input id="client-id" type="text" autocomplete="off" placeholder="Your Spotify Client ID" />
+        </div>
+        <div class="actions">
+          <button type="button" id="btn-save-client" class="btn secondary">Save Client ID</button>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="button" id="btn-login" class="btn primary">Sign in with Spotify</button>
+      </div>
+      <p id="auth-status" class="status"></p>
+
+      <h2>2. Load songs</h2>
+      <p class="hint">
+        Paste a Spotify link to a <strong>playlist</strong>, <strong>artist</strong>, or <strong>album</strong> (open in Spotify → Share → Copy link).
+      </p>
+      <div class="row">
+        <label for="spotify-url">Spotify URL</label>
+        <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/… or …/artist/…" />
+      </div>
+      <div class="actions">
+        <button type="button" id="btn-load" class="btn primary" disabled>Load tracks</button>
+      </div>
+      <p id="load-status" class="status"></p>
+
+      <h2>Or add tracks by hand</h2>
+      <p class="hint">One line per song: <code>Artist – Title | https://open.spotify.com/track/…</code></p>
+      <textarea id="manual-tracks" rows="6" placeholder="Taylor Swift – Anti-Hero | https://open.spotify.com/track/…"></textarea>
+      <div class="actions">
+        <button type="button" id="btn-manual" class="btn secondary">Use manual list</button>
+      </div>
+    </section>
+
+    <section id="panel-compare" class="panel hidden">
+      <div class="progress-wrap">
+        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+        <p id="progress-text" class="progress-text"></p>
+      </div>
+      <div class="duel">
+        <button type="button" class="song-card" id="card-a" aria-label="Prefer song A">
+          <span class="song-title" id="title-a"></span>
+          <span class="song-meta" id="meta-a"></span>
+          <span class="open-hint">Click to choose · <span class="link-label">Open in Spotify</span></span>
+        </button>
+        <div class="vs">or</div>
+        <button type="button" class="song-card" id="card-b" aria-label="Prefer song B">
+          <span class="song-title" id="title-b"></span>
+          <span class="song-meta" id="meta-b"></span>
+          <span class="open-hint">Click to choose · <span class="link-label">Open in Spotify</span></span>
+        </button>
+      </div>
+      <div class="inline-actions">
+        <a id="link-a" class="btn link" href="#" target="_blank" rel="noopener">Open A in Spotify</a>
+        <a id="link-b" class="btn link" href="#" target="_blank" rel="noopener">Open B in Spotify</a>
+      </div>
+      <p class="hint small">Tip: use Open links if you want to listen before you vote. Click a card to record your preference.</p>
+    </section>
+
+    <section id="panel-results" class="panel hidden">
+      <h2>Your ranking</h2>
+      <ol id="ranked-list" class="ranked-list"></ol>
+      <div class="actions">
+        <button type="button" id="btn-export" class="btn secondary">Copy list as text</button>
+        <button type="button" id="btn-restart" class="btn primary">Rank again (same songs)</button>
+        <button type="button" id="btn-new" class="btn secondary">Start over</button>
+      </div>
+      <p id="copy-status" class="status"></p>
+    </section>
+  </div>
+  <script src="config.js"></script>
+  <script src="app.js" defer></script>
+</body>
+</html>
