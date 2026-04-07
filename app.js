@@ -313,7 +313,7 @@ function updateProgress() {
   const pct = compareEstimate ? Math.min(100, (compareStep / compareEstimate) * 100) : 0;
   fill.style.width = `${pct}%`;
   text.textContent = compareEstimate
-    ? `Comparison ${compareStep} of ~${compareEstimate} (rough upper bound; actual merges may finish sooner)`
+    ? `Question ${compareStep} of ~${compareEstimate} (upper bound; many are skipped when already implied)`
     : "";
 }
 
@@ -374,6 +374,52 @@ function shuffleInPlace(arr) {
     const j = Math.floor(Math.random() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
+}
+
+/** Directed edges: winnerId → loserId means “winner preferred over loser”. Used to skip redundant merge questions. */
+let preferenceAdj = null;
+
+function resetPreferenceGraph() {
+  preferenceAdj = new Map();
+}
+
+function recordPreference(winnerId, loserId) {
+  if (!preferenceAdj.has(winnerId)) preferenceAdj.set(winnerId, new Set());
+  preferenceAdj.get(winnerId).add(loserId);
+}
+
+function isPreferredOver(preferredId, otherId) {
+  if (preferredId === otherId) return false;
+  const visited = new Set();
+  const stack = [preferredId];
+  while (stack.length) {
+    const x = stack.pop();
+    if (x === otherId) return true;
+    if (visited.has(x)) continue;
+    visited.add(x);
+    for (const y of preferenceAdj.get(x) || []) {
+      stack.push(y);
+    }
+  }
+  return false;
+}
+
+async function compareWithTransitiveCache(a, b) {
+  if (a.id === b.id) return 0;
+  if (isPreferredOver(a.id, b.id)) return -1;
+  if (isPreferredOver(b.id, a.id)) return 1;
+  const cmp = await compareTracks(a, b);
+  if (cmp <= 0) recordPreference(a.id, b.id);
+  else recordPreference(b.id, a.id);
+  return cmp;
+}
+
+function applyMaxTracksLimit(order) {
+  const raw = document.getElementById("max-tracks")?.value?.trim();
+  if (!raw) return;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 2) return;
+  if (n < order.length) order.length = n;
 }
 
 function newSaveId() {
@@ -530,6 +576,8 @@ async function runRanking(tracks) {
   if (tracks.length === 0) return;
   const order = [...tracks];
   shuffleInPlace(order);
+  applyMaxTracksLimit(order);
+  resetPreferenceGraph();
   compareStep = 0;
   compareEstimate = estimateMergeComparisons(order.length);
   updateProgress();
@@ -538,7 +586,7 @@ async function runRanking(tracks) {
 
   const ranked = await mergeSortByCompare(order, async (a, b) => {
     if (a.id === b.id) return 0;
-    return compareTracks(a, b);
+    return compareWithTransitiveCache(a, b);
   });
 
   showComparePanel(false);

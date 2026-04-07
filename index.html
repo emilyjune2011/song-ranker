@@ -18,7 +18,7 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=6" />
+  <link rel="stylesheet" href="styles.css?v=8" />
 </head>
 <body>
   <div class="app">
@@ -57,6 +57,13 @@
       <h2>2. Load songs</h2>
       <p class="hint">
         Paste a Spotify link to a <strong>playlist</strong>, <strong>artist</strong>, or <strong>album</strong> (open in Spotify → Share → Copy link).
+      </p>
+      <div class="row">
+        <label for="max-tracks">Limit how many songs to rank (optional)</label>
+        <input id="max-tracks" type="number" min="2" step="1" placeholder="All tracks" />
+      </div>
+      <p class="hint small">
+        Leave blank to rank everything. Set a number (e.g. 30) to shuffle and rank only that many — much fewer questions. Redundant head-to-heads are skipped when your earlier answers already imply who wins.
       </p>
       <div class="row">
         <label for="spotify-url">Spotify URL</label>
@@ -146,7 +153,7 @@
       <p id="copy-status" class="status"></p>
     </section>
   </div>
-  <script src="config.js?v=6"></script>
-  <script src="app.js?v=7" defer></script>
+  <script src="config.js?v=8"></script>
+  <script src="app.js?v=8" defer></script>
 </body>
 </html>
