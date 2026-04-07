@@ -284,17 +284,6 @@ select.select-input {
   color: var(--muted);
 }
 
-.open-hint {
-  display: block;
-  margin-top: 0.65rem;
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-
-.link-label {
-  color: var(--accent);
-}
-
 .ranked-list {
   margin: 0 0 1rem;
   padding-left: 1.25rem;
