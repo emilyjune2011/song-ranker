@@ -10,6 +10,8 @@ const AUTH_SCOPES = [
 
 const LS_CLIENT = "song_ranker_spotify_client_id";
 const LS_SAVED_RANKINGS = "song_ranker_saved_rankings";
+const LS_PROGRESS_AUTOSAVE = "song_ranker_progress_autosave";
+const LS_PROGRESS_NAMED = "song_ranker_progress_named";
 const SS_VERIFIER = "song_ranker_pkce_verifier";
 const SS_TOKEN = "song_ranker_access_token";
 const SS_EXPIRES = "song_ranker_token_expires_at";
@@ -356,15 +358,37 @@ function shuffleInPlace(arr) {
 }
 
 /** Directed edges: winnerId → loserId means “winner preferred over loser”. Used to skip redundant merge questions. */
+const CMP_UNDO = Symbol("cmpUndo");
+
 let preferenceAdj = null;
+/** Stack of recorded preferences (not skips); each entry has track refs to re-ask that pair on undo. */
+let choiceHistory = [];
+/** After undo, re-ask this pair before picking another from the graph. */
+let undoForcedPair = null;
+/** Skip counts per pair (pairKey → times deferred); must persist for resume. */
+let rankingDeferredCounts = new Map();
 
 function resetPreferenceGraph() {
   preferenceAdj = new Map();
+  choiceHistory = [];
+  undoForcedPair = null;
+  rankingDeferredCounts = new Map();
 }
 
 function recordPreference(winnerId, loserId) {
   if (!preferenceAdj.has(winnerId)) preferenceAdj.set(winnerId, new Set());
   preferenceAdj.get(winnerId).add(loserId);
+}
+
+function removePreferenceEdge(winnerId, loserId) {
+  const s = preferenceAdj.get(winnerId);
+  if (!s) return;
+  s.delete(loserId);
+  if (s.size === 0) preferenceAdj.delete(winnerId);
+}
+
+function pushChoice(winnerId, loserId, a, b) {
+  choiceHistory.push({ winnerId, loserId, a, b });
 }
 
 function isPreferredOver(preferredId, otherId) {
@@ -402,11 +426,11 @@ function findIncomparablePairs(tracks) {
   return pairs;
 }
 
-function pickNextPair(pairs, deferredCounts) {
+function pickNextPair(pairs) {
   const scored = pairs.map(([a, b]) => ({
     a,
     b,
-    d: deferredCounts.get(pairKey(a, b)) || 0,
+    d: rankingDeferredCounts.get(pairKey(a, b)) || 0,
   }));
   scored.sort((x, y) => {
     if (x.d !== y.d) return x.d - y.d;
@@ -447,44 +471,387 @@ function extractRanking(tracks) {
   return ranked;
 }
 
+/** Active session order (for save / resume); null when not ranking. */
+let currentRankingOrder = null;
+/** Current head-to-head on screen [idA, idB] while waiting for an answer. */
+let pendingPairForSave = null;
+
+function findTrackById(tracks, id) {
+  return tracks.find((t) => t.id === id) || null;
+}
+
+function preferenceAdjToJSON() {
+  const o = {};
+  for (const [w, losers] of preferenceAdj) {
+    o[w] = [...losers];
+  }
+  return o;
+}
+
+function preferenceAdjFromJSON(obj) {
+  const m = new Map();
+  if (!obj || typeof obj !== "object") return m;
+  for (const [w, losers] of Object.entries(obj)) {
+    m.set(w, new Set(Array.isArray(losers) ? losers : []));
+  }
+  return m;
+}
+
+function choiceHistoryToJSON() {
+  return choiceHistory.map(({ winnerId, loserId, a, b }) => ({
+    winnerId,
+    loserId,
+    aId: a.id,
+    bId: b.id,
+  }));
+}
+
+function reconstructChoiceHistory(entries, tracks) {
+  const byId = new Map(tracks.map((t) => [t.id, t]));
+  const out = [];
+  for (const e of entries || []) {
+    const a = byId.get(e.aId);
+    const b = byId.get(e.bId);
+    if (a && b) out.push({ winnerId: e.winnerId, loserId: e.loserId, a, b });
+  }
+  return out;
+}
+
+function getPendingPairIds() {
+  if (undoForcedPair) return [undoForcedPair[0].id, undoForcedPair[1].id];
+  if (pendingPairForSave) return [...pendingPairForSave];
+  return null;
+}
+
+function buildProgressSnapshot() {
+  if (!currentRankingOrder?.length) return null;
+  return {
+    v: 1,
+    savedAt: Date.now(),
+    tracks: currentRankingOrder.map((t) => ({ ...t })),
+    adj: preferenceAdjToJSON(),
+    choiceHistory: choiceHistoryToJSON(),
+    deferred: [...rankingDeferredCounts.entries()],
+    pendingPair: getPendingPairIds(),
+    compareStep,
+    compareEstimate,
+  };
+}
+
+function applyResumeSnapshot(snap, order) {
+  preferenceAdj = preferenceAdjFromJSON(snap.adj);
+  choiceHistory = reconstructChoiceHistory(snap.choiceHistory, order);
+  rankingDeferredCounts = new Map(snap.deferred || []);
+  undoForcedPair = null;
+  if (snap.pendingPair && snap.pendingPair.length === 2) {
+    const ta = findTrackById(order, snap.pendingPair[0]);
+    const tb = findTrackById(order, snap.pendingPair[1]);
+    if (ta && tb) undoForcedPair = [ta, tb];
+  }
+  compareStep = snap.compareStep ?? 0;
+  compareEstimate = snap.compareEstimate ?? estimateMergeComparisons(order.length);
+}
+
+function isValidProgressSnapshot(o) {
+  return (
+    o &&
+    o.v === 1 &&
+    Array.isArray(o.tracks) &&
+    o.tracks.length >= 2 &&
+    o.adj &&
+    typeof o.adj === "object"
+  );
+}
+
+let progressAutosaveTimer = null;
+
+function scheduleProgressAutosave() {
+  if (!currentRankingOrder?.length) return;
+  if (progressAutosaveTimer) clearTimeout(progressAutosaveTimer);
+  progressAutosaveTimer = setTimeout(() => {
+    progressAutosaveTimer = null;
+    try {
+      const snap = buildProgressSnapshot();
+      if (!snap) return;
+      localStorage.setItem(LS_PROGRESS_AUTOSAVE, JSON.stringify(snap));
+      refreshProgressPicker();
+    } catch (_) {}
+  }, 450);
+}
+
+function clearProgressAutosave() {
+  try {
+    localStorage.removeItem(LS_PROGRESS_AUTOSAVE);
+  } catch (_) {}
+  refreshProgressPicker();
+}
+
+function getNamedProgressList() {
+  try {
+    const raw = localStorage.getItem(LS_PROGRESS_NAMED);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function setNamedProgressList(list) {
+  localStorage.setItem(LS_PROGRESS_NAMED, JSON.stringify(list));
+}
+
+function refreshProgressPicker() {
+  const sel = document.getElementById("progress-pick");
+  if (!sel) return;
+  const autosave = localStorage.getItem(LS_PROGRESS_AUTOSAVE);
+  sel.innerHTML = '<option value="">— Choose a session —</option>';
+  if (autosave) {
+    try {
+      const snap = JSON.parse(autosave);
+      const opt = document.createElement("option");
+      opt.value = "__autosave__";
+      const n = snap.tracks?.length || "?";
+      const t = snap.savedAt ? new Date(snap.savedAt).toLocaleString() : "";
+      opt.textContent = `Auto-saved · ${n} songs · ${t}`;
+      sel.appendChild(opt);
+    } catch (_) {}
+  }
+  for (const s of getNamedProgressList().sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0))) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = (s.name || "Untitled").slice(0, 72);
+    sel.appendChild(opt);
+  }
+}
+
+function getSelectedProgressSnapshot() {
+  const sel = document.getElementById("progress-pick");
+  const id = sel?.value;
+  if (!id) return null;
+  if (id === "__autosave__") {
+    const raw = localStorage.getItem(LS_PROGRESS_AUTOSAVE);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  }
+  const found = getNamedProgressList().find((x) => x.id === id);
+  return found?.snapshot || null;
+}
+
+function downloadTextFile(filename, text, mime) {
+  const blob = new Blob([text], { type: mime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function saveProgressNow(statusEl) {
+  const el = statusEl || document.getElementById("compare-save-status");
+  const snap = buildProgressSnapshot();
+  if (!snap) {
+    if (el) el.textContent = "Nothing to save.";
+    return;
+  }
+  try {
+    localStorage.setItem(LS_PROGRESS_AUTOSAVE, JSON.stringify(snap));
+    refreshProgressPicker();
+    if (el) el.textContent = "Saved to this browser.";
+  } catch {
+    if (el) el.textContent = "Could not save (storage blocked).";
+  }
+}
+
+function duplicateProgressAsNamed() {
+  const snap = getSelectedProgressSnapshot();
+  const status = document.getElementById("progress-status");
+  if (!snap || !isValidProgressSnapshot(snap)) {
+    if (status) {
+      status.textContent = "Choose auto-saved or a named checkpoint first.";
+      status.classList.add("error");
+    }
+    return;
+  }
+  const name = prompt("Name for this checkpoint:");
+  if (!name?.trim()) return;
+  const list = getNamedProgressList();
+  list.push({ id: newSaveId(), name: name.trim(), savedAt: Date.now(), snapshot: snap });
+  setNamedProgressList(list);
+  refreshProgressPicker();
+  if (status) {
+    status.textContent = "Saved as a named checkpoint.";
+    status.classList.remove("error");
+  }
+}
+
+function deleteSelectedProgress() {
+  const sel = document.getElementById("progress-pick");
+  const id = sel?.value;
+  const status = document.getElementById("progress-status");
+  if (!id) {
+    if (status) {
+      status.textContent = "Choose a session first.";
+      status.classList.add("error");
+    }
+    return;
+  }
+  if (id === "__autosave__") {
+    if (!confirm("Delete auto-saved progress?")) return;
+    clearProgressAutosave();
+    if (status) {
+      status.textContent = "Deleted.";
+      status.classList.remove("error");
+    }
+    return;
+  }
+  if (!confirm("Delete this named checkpoint?")) return;
+  const next = getNamedProgressList().filter((x) => x.id !== id);
+  setNamedProgressList(next);
+  refreshProgressPicker();
+  if (status) {
+    status.textContent = "Deleted.";
+    status.classList.remove("error");
+  }
+}
+
+function exportProgressJsonFile() {
+  const snap = buildProgressSnapshot() || getSelectedProgressSnapshot();
+  const status = document.getElementById("progress-status");
+  if (!snap) {
+    if (status) {
+      status.textContent = "Select a session, or save while a ranking is open.";
+      status.classList.add("error");
+    }
+    return;
+  }
+  downloadTextFile(`song-ranker-progress-${Date.now()}.json`, JSON.stringify(snap, null, 2), "application/json");
+  if (status) {
+    status.textContent = "Downloaded JSON.";
+    status.classList.remove("error");
+  }
+}
+
+function importProgressFromFile(file) {
+  const reader = new FileReader();
+  const status = document.getElementById("progress-status");
+  reader.onload = () => {
+    try {
+      const snap = JSON.parse(reader.result);
+      if (!isValidProgressSnapshot(snap)) throw new Error("Invalid song ranker progress file.");
+      const list = getNamedProgressList();
+      list.push({
+        id: newSaveId(),
+        name: `Imported ${new Date().toLocaleString()}`,
+        savedAt: Date.now(),
+        snapshot: snap,
+      });
+      setNamedProgressList(list);
+      refreshProgressPicker();
+      if (status) {
+        status.textContent = "Imported. Select it and tap Resume.";
+        status.classList.remove("error");
+      }
+    } catch (e) {
+      if (status) {
+        status.textContent = e.message || String(e);
+        status.classList.add("error");
+      }
+    }
+  };
+  reader.readAsText(file);
+}
+
+function csvEscapeCell(s) {
+  if (s == null) return "";
+  const t = String(s);
+  if (/[",\n\r]/.test(t)) return `"${t.replace(/"/g, '""')}"`;
+  return t;
+}
+
+function exportRankingToJson() {
+  const ranked = window.__lastRanked;
+  const status = document.getElementById("copy-status");
+  if (!ranked?.length) {
+    status.textContent = "Nothing to export.";
+    return;
+  }
+  const payload = {
+    v: 1,
+    type: "song_ranker_result",
+    exportedAt: new Date().toISOString(),
+    tracks: ranked.map((t) => ({ ...t })),
+  };
+  downloadTextFile(`song-ranker-results-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
+  status.textContent = "Downloaded JSON.";
+}
+
+function exportRankingToCsv() {
+  const ranked = window.__lastRanked;
+  const status = document.getElementById("copy-status");
+  if (!ranked?.length) {
+    status.textContent = "Nothing to export.";
+    return;
+  }
+  const lines = ["rank,title,artists,album,url"];
+  ranked.forEach((t, i) => {
+    lines.push([i + 1, t.name, t.artists || "", t.album || "", t.url || ""].map(csvEscapeCell).join(","));
+  });
+  downloadTextFile(`song-ranker-results-${Date.now()}.csv`, lines.join("\n"), "text/csv;charset=utf-8");
+  status.textContent = "Downloaded CSV.";
+}
+
 function setDeferButtonVisible(show) {
   document.getElementById("btn-skip-pair")?.classList.toggle("hidden", !show);
   document.getElementById("skip-hint")?.classList.toggle("hidden", !show);
 }
 
 async function rankWithPartialOrder(tracks) {
-  const deferredCounts = new Map();
   for (;;) {
-    const incomparable = findIncomparablePairs(tracks);
-    if (incomparable.length === 0) {
-      return extractRanking(tracks);
+    let a;
+    let b;
+    let canDefer;
+    if (undoForcedPair) {
+      [a, b] = undoForcedPair;
+      undoForcedPair = null;
+      const incomparable = findIncomparablePairs(tracks);
+      canDefer = incomparable.length > 1;
+    } else {
+      const incomparable = findIncomparablePairs(tracks);
+      if (incomparable.length === 0) {
+        return extractRanking(tracks);
+      }
+      [a, b] = pickNextPair(incomparable);
+      canDefer = incomparable.length > 1;
     }
-    const [a, b] = pickNextPair(incomparable, deferredCounts);
     const key = pairKey(a, b);
-    const canDefer = incomparable.length > 1;
     const cmp = await compareTracks(a, b, canDefer);
+    if (cmp === CMP_UNDO) {
+      continue;
+    }
     if (cmp === 0) {
       if (canDefer) {
-        deferredCounts.set(key, (deferredCounts.get(key) || 0) + 1);
+        rankingDeferredCounts.set(key, (rankingDeferredCounts.get(key) || 0) + 1);
+        scheduleProgressAutosave();
         continue;
       }
       const tie = Math.random() < 0.5 ? -1 : 1;
-      if (tie < 0) recordPreference(a.id, b.id);
-      else recordPreference(b.id, a.id);
+      if (tie < 0) {
+        recordPreference(a.id, b.id);
+        pushChoice(a.id, b.id, a, b);
+      } else {
+        recordPreference(b.id, a.id);
+        pushChoice(b.id, a.id, a, b);
+      }
     } else if (cmp < 0) {
       recordPreference(a.id, b.id);
+      pushChoice(a.id, b.id, a, b);
     } else {
       recordPreference(b.id, a.id);
+      pushChoice(b.id, a.id, a, b);
     }
+    scheduleProgressAutosave();
   }
-}
-
-function applyMaxTracksLimit(order) {
-  const raw = document.getElementById("max-tracks")?.value?.trim();
-  if (!raw) return;
-  const n = parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 2) return;
-  if (n < order.length) order.length = n;
 }
 
 function newSaveId() {
@@ -507,19 +874,50 @@ function setSavedRankings(list) {
   localStorage.setItem(LS_SAVED_RANKINGS, JSON.stringify(list));
 }
 
-function refreshSavedPicker() {
-  const sel = document.getElementById("saved-pick");
-  if (!sel) return;
+function renderSavedRankingsList() {
+  const ul = document.getElementById("saved-rankings-list");
+  const emptyEl = document.getElementById("saved-rankings-empty");
+  if (!ul) return;
   const list = getSavedRankings();
   const sorted = [...list].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
-  sel.innerHTML = '<option value="">— Choose a saved list —</option>';
+  ul.innerHTML = "";
+  if (emptyEl) emptyEl.classList.toggle("hidden", sorted.length > 0);
+
   for (const s of sorted) {
-    const opt = document.createElement("option");
-    opt.value = s.id;
-    const label = (s.name || "Untitled").slice(0, 80);
-    const date = s.savedAt ? new Date(s.savedAt).toLocaleDateString() : "";
-    opt.textContent = date ? `${label} · ${date}` : label;
-    sel.appendChild(opt);
+    const li = document.createElement("li");
+    li.className = "saved-ranking-item";
+    const n = s.tracks?.length ?? 0;
+    const name = (s.name || "Untitled").slice(0, 120);
+    const date = s.savedAt
+      ? new Date(s.savedAt).toLocaleDateString(undefined, { dateStyle: "medium" })
+      : "";
+    const metaBits = [`${n} song${n === 1 ? "" : "s"}`];
+    if (date) metaBits.push(date);
+    const meta = metaBits.join(" · ");
+
+    const openBtn = document.createElement("button");
+    openBtn.type = "button";
+    openBtn.className = "saved-ranking-open";
+    openBtn.dataset.id = s.id;
+    const title = document.createElement("span");
+    title.className = "saved-ranking-name";
+    title.textContent = name;
+    const sub = document.createElement("span");
+    sub.className = "saved-ranking-meta";
+    sub.textContent = meta;
+    openBtn.appendChild(title);
+    openBtn.appendChild(sub);
+
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.className = "btn secondary saved-ranking-delete";
+    delBtn.dataset.id = s.id;
+    delBtn.setAttribute("aria-label", `Remove ${name}`);
+    delBtn.textContent = "Remove";
+
+    li.appendChild(openBtn);
+    li.appendChild(delBtn);
+    ul.appendChild(li);
   }
 }
 
@@ -557,7 +955,7 @@ function saveCurrentRanking() {
   });
   try {
     setSavedRankings(list);
-    refreshSavedPicker();
+    renderSavedRankingsList();
     status.textContent = "Saved to this browser.";
     const sn = document.getElementById("save-name");
     if (sn) sn.value = "";
@@ -566,19 +964,14 @@ function saveCurrentRanking() {
   }
 }
 
-function loadSelectedSaved() {
-  const sel = document.getElementById("saved-pick");
-  const status = document.getElementById("load-status");
-  const id = sel?.value;
-  if (!id) {
-    status.textContent = "Choose a saved list first.";
-    status.classList.add("error");
-    return;
-  }
+function loadSavedById(id) {
+  const status = document.getElementById("saved-rankings-status");
   const found = getSavedRankings().find((s) => s.id === id);
   if (!found?.tracks?.length) {
-    status.textContent = "Could not load that list.";
-    status.classList.add("error");
+    if (status) {
+      status.textContent = "Could not load that list.";
+      status.classList.add("error");
+    }
     return;
   }
   const ranked = found.tracks.map((t) => ({ ...t }));
@@ -587,37 +980,42 @@ function loadSelectedSaved() {
   showComparePanel(false);
   showResultsPanel(true);
   document.getElementById("panel-setup")?.classList.add("hidden");
-  status.textContent = "";
-  status.classList.remove("error");
+  if (status) {
+    status.textContent = "";
+    status.classList.remove("error");
+  }
   document.getElementById("copy-status").textContent = "";
 }
 
-function deleteSelectedSaved() {
-  const sel = document.getElementById("saved-pick");
-  const status = document.getElementById("load-status");
-  const id = sel?.value;
-  if (!id) {
-    status.textContent = "Choose a saved list first.";
-    status.classList.add("error");
-    return;
-  }
+function deleteSavedById(id) {
+  const status = document.getElementById("saved-rankings-status");
   if (!confirm("Delete this saved ranking from this browser?")) return;
   const next = getSavedRankings().filter((s) => s.id !== id);
   setSavedRankings(next);
-  refreshSavedPicker();
-  status.textContent = "Deleted.";
-  status.classList.remove("error");
+  renderSavedRankingsList();
+  if (status) {
+    status.textContent = "Deleted.";
+    status.classList.remove("error");
+  }
+}
+
+function updateUndoButton() {
+  const btn = document.getElementById("btn-undo");
+  if (!btn) return;
+  btn.disabled = !(choiceHistory.length > 0 && pendingResolve);
 }
 
 function compareTracks(a, b, canDefer = true) {
+  pendingPairForSave = [a.id, b.id];
   return new Promise((resolve) => {
     pendingResolve = (value) => {
-      if (value !== 0) compareStep += 1;
+      if (value !== 0 && value !== CMP_UNDO) compareStep += 1;
       updateProgress();
       resolve(value);
     };
     setDeferButtonVisible(canDefer);
     renderPair(a, b);
+    updateUndoButton();
   });
 }
 
@@ -645,26 +1043,64 @@ function wireCompareCards() {
     pendingResolve = null;
     r(0);
   });
+  document.getElementById("btn-undo")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!pendingResolve || choiceHistory.length === 0) return;
+    const last = choiceHistory.pop();
+    removePreferenceEdge(last.winnerId, last.loserId);
+    compareStep = Math.max(0, compareStep - 1);
+    updateProgress();
+    undoForcedPair = [last.a, last.b];
+    const r = pendingResolve;
+    pendingResolve = null;
+    r(CMP_UNDO);
+    scheduleProgressAutosave();
+  });
 }
 
-async function runRanking(tracks) {
-  if (tracks.length === 0) return;
-  const order = [...tracks];
-  shuffleInPlace(order);
-  applyMaxTracksLimit(order);
-  resetPreferenceGraph();
-  compareStep = 0;
-  compareEstimate = estimateMergeComparisons(order.length);
+async function runRanking(tracks, options = {}) {
+  const resume = options.resumeSnapshot;
+  if (!resume && (!tracks || tracks.length === 0)) return;
+  if (resume && (!resume.tracks || resume.tracks.length < 2)) return;
+
+  let order;
+  if (resume) {
+    order = resume.tracks.map((t) => ({ ...t }));
+    applyResumeSnapshot(resume, order);
+    currentRankingOrder = order;
+  } else {
+    order = [...tracks];
+    shuffleInPlace(order);
+    resetPreferenceGraph();
+    compareStep = 0;
+    compareEstimate = estimateMergeComparisons(order.length);
+    currentRankingOrder = order;
+  }
+
   updateProgress();
   showComparePanel(true);
   showResultsPanel(false);
 
-  const ranked = await rankWithPartialOrder(order);
-
-  showComparePanel(false);
-  showResultsPanel(true);
-  window.__lastRanked = ranked;
-  renderRankedList(ranked);
+  try {
+    const ranked = await rankWithPartialOrder(order);
+    showComparePanel(false);
+    showResultsPanel(true);
+    window.__lastRanked = ranked;
+    renderRankedList(ranked);
+    clearProgressAutosave();
+  } catch (e) {
+    showComparePanel(false);
+    showResultsPanel(false);
+    document.getElementById("panel-setup")?.classList.remove("hidden");
+    const st = document.getElementById("load-status");
+    if (st) {
+      st.textContent = e.message || String(e);
+      st.classList.add("error");
+    }
+  } finally {
+    currentRankingOrder = null;
+    pendingPairForSave = null;
+  }
 }
 
 function exchangeCodeForToken(code, verifier, clientId) {
@@ -743,7 +1179,8 @@ async function startLogin() {
 }
 
 function init() {
-  refreshSavedPicker();
+  renderSavedRankingsList();
+  refreshProgressPicker();
   setRedirectDisplay();
   if (window.location.protocol === "file:") {
     const auth = document.getElementById("auth-status");
@@ -847,8 +1284,56 @@ function init() {
 
   document.getElementById("btn-save-ranking")?.addEventListener("click", saveCurrentRanking);
 
-  document.getElementById("btn-load-saved")?.addEventListener("click", loadSelectedSaved);
-  document.getElementById("btn-delete-saved")?.addEventListener("click", deleteSelectedSaved);
+  document.getElementById("saved-rankings-list")?.addEventListener("click", (e) => {
+    const del = e.target.closest(".saved-ranking-delete");
+    const open = e.target.closest(".saved-ranking-open");
+    if (del?.dataset.id) {
+      e.preventDefault();
+      deleteSavedById(del.dataset.id);
+      return;
+    }
+    if (open?.dataset.id) loadSavedById(open.dataset.id);
+  });
+
+  document.getElementById("btn-save-ranking-progress")?.addEventListener("click", () => saveProgressNow());
+
+  document.getElementById("btn-resume-progress")?.addEventListener("click", async () => {
+    const snap = getSelectedProgressSnapshot();
+    const st = document.getElementById("progress-status");
+    const loadSt = document.getElementById("load-status");
+    if (!snap || !isValidProgressSnapshot(snap)) {
+      if (st) {
+        st.textContent = "Choose a session from the list first.";
+        st.classList.add("error");
+      }
+      return;
+    }
+    if (st) {
+      st.textContent = "";
+      st.classList.remove("error");
+    }
+    if (loadSt) {
+      loadSt.textContent = "";
+      loadSt.classList.remove("error");
+    }
+    await runRanking([], { resumeSnapshot: snap });
+  });
+
+  document.getElementById("btn-save-progress-named")?.addEventListener("click", duplicateProgressAsNamed);
+
+  document.getElementById("btn-delete-progress")?.addEventListener("click", deleteSelectedProgress);
+
+  document.getElementById("btn-export-progress-json")?.addEventListener("click", exportProgressJsonFile);
+
+  document.getElementById("btn-import-progress")?.addEventListener("click", () => {
+    document.getElementById("import-progress-file")?.click();
+  });
+
+  document.getElementById("import-progress-file")?.addEventListener("change", (e) => {
+    const f = e.target.files?.[0];
+    if (f) importProgressFromFile(f);
+    e.target.value = "";
+  });
 
   document.getElementById("btn-export")?.addEventListener("click", () => {
     const ranked = window.__lastRanked;
@@ -867,6 +1352,9 @@ function init() {
       }
     );
   });
+
+  document.getElementById("btn-export-json")?.addEventListener("click", exportRankingToJson);
+  document.getElementById("btn-export-csv")?.addEventListener("click", exportRankingToCsv);
 
   document.getElementById("btn-restart")?.addEventListener("click", () => {
     const ranked = window.__lastRanked;

@@ -18,7 +18,7 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=11" />
+  <link rel="stylesheet" href="styles.css?v=16" />
 </head>
 <body>
   <div class="app">
@@ -59,13 +59,6 @@
         Paste a Spotify link to a <strong>playlist</strong>, <strong>artist</strong>, or <strong>album</strong> (open in Spotify → Share → Copy link).
       </p>
       <div class="row">
-        <label for="max-tracks">Limit how many songs to rank (optional)</label>
-        <input id="max-tracks" type="number" min="2" step="1" placeholder="All tracks" />
-      </div>
-      <p class="hint small">
-        Leave blank to rank everything. Set a number (e.g. 30) to shuffle and rank only that many — much fewer questions. Redundant head-to-heads are skipped when your earlier answers already imply who wins.
-      </p>
-      <div class="row">
         <label for="spotify-url">Spotify URL</label>
         <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/… or …/artist/…" />
       </div>
@@ -81,18 +74,37 @@
         <button type="button" id="btn-manual" class="btn secondary">Use manual list</button>
       </div>
 
-      <h2>Saved rankings</h2>
-      <p class="hint">Lists you save stay in this browser on this device only (not on Spotify’s servers).</p>
+      <h2>Resume in-progress ranking</h2>
+      <p class="hint">
+        Your answers are auto-saved in this browser after each choice. Export a JSON file to back up or move a session to another device.
+      </p>
       <div class="row">
-        <label for="saved-pick">Open a list you saved before</label>
-        <select id="saved-pick" class="select-input">
-          <option value="">— Choose a saved list —</option>
+        <label for="progress-pick">Session</label>
+        <select id="progress-pick" class="select-input">
+          <option value="">— Choose a session —</option>
         </select>
       </div>
       <div class="actions">
-        <button type="button" id="btn-load-saved" class="btn secondary">Load</button>
-        <button type="button" id="btn-delete-saved" class="btn secondary">Delete selected</button>
+        <button type="button" id="btn-resume-progress" class="btn primary">Resume</button>
+        <button type="button" id="btn-save-progress-named" class="btn secondary">Duplicate as named checkpoint</button>
+        <button type="button" id="btn-delete-progress" class="btn secondary">Delete selected</button>
       </div>
+      <div class="actions">
+        <button type="button" id="btn-export-progress-json" class="btn secondary">Export progress JSON</button>
+        <button type="button" id="btn-import-progress" class="btn secondary">Import progress JSON</button>
+        <input type="file" id="import-progress-file" accept=".json,application/json" hidden />
+      </div>
+      <p id="progress-status" class="status"></p>
+
+      <h2>Saved rankings</h2>
+      <p class="hint">
+        Stored only in this browser. <strong>Tap a row</strong> to open that ranking. Use <strong>Remove</strong> to delete one.
+      </p>
+      <ul id="saved-rankings-list" class="saved-rankings-list" role="list"></ul>
+      <p id="saved-rankings-empty" class="hint saved-rankings-empty hidden">
+        No saved rankings yet. When you finish ranking a playlist, use “Save to this browser” on the results screen.
+      </p>
+      <p id="saved-rankings-status" class="status"></p>
     </section>
 
     <section id="panel-compare" class="panel hidden">
@@ -136,11 +148,19 @@
         </div>
       </div>
       <div class="skip-pair">
-        <button type="button" id="btn-skip-pair" class="btn secondary">Skip for now</button>
+        <div class="compare-extras">
+          <button type="button" id="btn-undo" class="btn secondary" disabled>Undo last choice</button>
+          <button type="button" id="btn-skip-pair" class="btn secondary">Skip for now</button>
+        </div>
         <p class="hint small" id="skip-hint">
           Come back to this matchup after other comparisons narrow things down. If this is the last open question, you’ll need to pick a side.
         </p>
       </div>
+      <div class="compare-save-row">
+        <button type="button" id="btn-save-ranking-progress" class="btn secondary">Save progress now</button>
+        <span id="compare-save-status" class="hint small" role="status"></span>
+      </div>
+      <p class="hint small">Progress is auto-saved in this browser after each choice (and when you undo).</p>
     </section>
 
     <section id="panel-results" class="panel hidden">
@@ -153,13 +173,15 @@
       <div class="actions">
         <button type="button" id="btn-save-ranking" class="btn secondary">Save to this browser</button>
         <button type="button" id="btn-export" class="btn secondary">Copy list as text</button>
+        <button type="button" id="btn-export-json" class="btn secondary">Export JSON</button>
+        <button type="button" id="btn-export-csv" class="btn secondary">Export CSV</button>
         <button type="button" id="btn-restart" class="btn primary">Rank again (same songs)</button>
         <button type="button" id="btn-new" class="btn secondary">Start over</button>
       </div>
       <p id="copy-status" class="status"></p>
     </section>
   </div>
-  <script src="config.js?v=11"></script>
-  <script src="app.js?v=11" defer></script>
+  <script src="config.js?v=16"></script>
+  <script src="app.js?v=16" defer></script>
 </body>
 </html>

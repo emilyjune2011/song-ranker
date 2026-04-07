@@ -255,6 +255,27 @@ select.select-input {
   text-align: center;
 }
 
+.compare-extras {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: center;
+  align-items: center;
+}
+
+.compare-save-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1rem;
+}
+
+.compare-save-row .hint {
+  margin: 0;
+}
+
 .skip-pair .hint,
 #skip-hint {
   margin-top: 0.4rem;
@@ -309,4 +330,81 @@ select.select-input {
 
 .ranked-list a {
   font-weight: 500;
+}
+
+.saved-rankings-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.saved-rankings-empty {
+  margin-top: 0.5rem;
+}
+
+.saved-ranking-item {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg);
+}
+
+.saved-ranking-open {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
+  padding: 0.65rem 0.9rem;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.saved-ranking-open:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.saved-ranking-open:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.saved-ranking-name {
+  font-weight: 600;
+  font-size: 0.95rem;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.saved-ranking-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.saved-ranking-delete {
+  flex-shrink: 0;
+  align-self: stretch;
+  border-radius: 0;
+  padding: 0.5rem 0.85rem;
+  font-size: 0.85rem;
+}
+
+.btn.secondary.saved-ranking-delete {
+  border: none;
+  border-left: 1px solid var(--border);
+}
+
+.saved-ranking-delete:hover:not(:disabled) {
+  background: rgba(232, 93, 93, 0.12);
 }
