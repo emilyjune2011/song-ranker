@@ -320,9 +320,22 @@ function showResultsPanel(show) {
   document.getElementById("panel-results")?.classList.toggle("hidden", !show);
 }
 
-function spotifyEmbedSrc(track) {
-  const id = track?.id;
+function spotifyTrackIdForEmbed(track) {
+  let id = track?.id;
+  if (!id || String(id).startsWith("manual")) {
+    const u = track?.url;
+    if (u && u !== "#") {
+      const m = String(u).match(/track\/([a-zA-Z0-9]+)/);
+      if (m) id = m[1];
+    }
+  }
   if (!id || String(id).startsWith("manual")) return "";
+  return id;
+}
+
+function spotifyEmbedSrc(track) {
+  const id = spotifyTrackIdForEmbed(track);
+  if (!id) return "";
   return `https://open.spotify.com/embed/track/${encodeURIComponent(id)}?theme=0`;
 }
 
@@ -332,9 +345,9 @@ function setTrackEmbed(iframeId, wrapId, track) {
   if (!iframe || !wrap) return;
   const src = spotifyEmbedSrc(track);
   if (src) {
-    iframe.src = src;
-    iframe.setAttribute("title", `Spotify preview: ${track.name}`);
     wrap.classList.remove("hidden");
+    iframe.setAttribute("title", `Spotify preview: ${track.name}`);
+    iframe.src = src;
   } else {
     iframe.removeAttribute("src");
     wrap.classList.add("hidden");
