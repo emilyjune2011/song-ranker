@@ -18,7 +18,7 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=19" />
+  <link rel="stylesheet" href="styles.css?v=20" />
 </head>
 <body>
   <div class="app">
@@ -57,8 +57,9 @@
 
       <h2>2. Load songs</h2>
       <p class="hint">
-        Paste a Spotify link to a <strong>playlist</strong>, <strong>artist</strong>, or <strong>album</strong> (open in Spotify → Share → Copy link).
+        Paste a Spotify link to a <strong>playlist</strong>, <strong>artist</strong>, or <strong>album</strong> (open in Spotify → Share → Copy link), or tap a preset to load that artist’s catalog.
       </p>
+      <div id="preset-buttons" class="preset-buttons"></div>
       <div class="row">
         <label for="spotify-url">Spotify URL</label>
         <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/… or …/artist/…" />
@@ -67,10 +68,6 @@
         <button type="button" id="btn-load" class="btn primary" disabled>Load tracks</button>
       </div>
       <p id="load-status" class="status"></p>
-
-      <h2>Quick picks</h2>
-      <p class="hint">Load a preset artist catalog in one tap (same as using an artist link above).</p>
-      <div id="preset-buttons" class="preset-buttons"></div>
 
       <h2>Your lists & backups</h2>
       <p class="hint">
@@ -191,7 +188,7 @@
       <p id="copy-status" class="status"></p>
     </section>
   </div>
-  <script src="config.js?v=19"></script>
-  <script src="app.js?v=19" defer></script>
+  <script src="config.js?v=20"></script>
+  <script src="app.js?v=20" defer></script>
 </body>
 </html>
