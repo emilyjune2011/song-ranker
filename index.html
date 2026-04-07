@@ -1,17 +1,20 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <meta charset="UTF-8" />
   <script>
     (function () {
-      var path = location.pathname;
-      if (path === "/" || path === "") return;
-      if (path.endsWith("/")) return;
-      var last = path.split("/").pop() || "";
-      if (last.indexOf(".") !== -1) return;
-      location.replace(path + "/" + location.search + location.hash);
+      var p = location.pathname;
+      var dir = p;
+      if (!dir.endsWith("/")) {
+        if (/\.html$/i.test(dir)) dir = dir.replace(/\/[^/]+$/, "/");
+        else dir = dir + "/";
+      }
+      var b = document.createElement("base");
+      b.href = location.origin + dir;
+      document.head.insertBefore(b, document.head.children[1] || null);
     })();
   </script>
-  <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
   <link rel="stylesheet" href="styles.css" />
