@@ -255,7 +255,8 @@ select.select-input {
   text-align: center;
 }
 
-.skip-pair .hint {
+.skip-pair .hint,
+#skip-hint {
   margin-top: 0.4rem;
   margin-bottom: 0;
   max-width: 28rem;

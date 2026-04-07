@@ -274,27 +274,6 @@ function parseManualList(text) {
   return out;
 }
 
-/** Merge sort using user comparisons; O(n log n) comparisons worst-case. */
-async function mergeSortByCompare(arr, compareFn) {
-  if (arr.length <= 1) return arr;
-  const mid = Math.floor(arr.length / 2);
-  const left = await mergeSortByCompare(arr.slice(0, mid), compareFn);
-  const right = await mergeSortByCompare(arr.slice(mid), compareFn);
-  return merge(left, right, compareFn);
-}
-
-async function merge(left, right, compareFn) {
-  const result = [];
-  let i = 0;
-  let j = 0;
-  while (i < left.length && j < right.length) {
-    const cmp = await compareFn(left[i], right[j]);
-    if (cmp <= 0) result.push(left[i++]);
-    else result.push(right[j++]);
-  }
-  return result.concat(left.slice(i)).concat(right.slice(j));
-}
-
 /** --- UI state --- */
 
 let compareStep = 0;
@@ -313,7 +292,7 @@ function updateProgress() {
   const pct = compareEstimate ? Math.min(100, (compareStep / compareEstimate) * 100) : 0;
   fill.style.width = `${pct}%`;
   text.textContent = compareEstimate
-    ? `Question ${compareStep} of ~${compareEstimate} (upper bound; many are skipped when already implied)`
+    ? `Question ${compareStep} of ~${compareEstimate} (upper bound; skips don’t count as decisions)`
     : "";
 }
 
@@ -404,17 +383,100 @@ function isPreferredOver(preferredId, otherId) {
   return false;
 }
 
-async function compareWithTransitiveCache(a, b) {
-  if (a.id === b.id) return 0;
-  if (isPreferredOver(a.id, b.id)) return -1;
-  if (isPreferredOver(b.id, a.id)) return 1;
-  let cmp = await compareTracks(a, b);
-  if (cmp === 0) {
-    cmp = Math.random() < 0.5 ? -1 : 1;
+function pairKey(a, b) {
+  return a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
+}
+
+function findIncomparablePairs(tracks) {
+  const pairs = [];
+  for (let i = 0; i < tracks.length; i++) {
+    for (let j = i + 1; j < tracks.length; j++) {
+      const a = tracks[i];
+      const b = tracks[j];
+      if (a.id === b.id) continue;
+      if (!isPreferredOver(a.id, b.id) && !isPreferredOver(b.id, a.id)) {
+        pairs.push([a, b]);
+      }
+    }
   }
-  if (cmp < 0) recordPreference(a.id, b.id);
-  else recordPreference(b.id, a.id);
-  return cmp;
+  return pairs;
+}
+
+function pickNextPair(pairs, deferredCounts) {
+  const scored = pairs.map(([a, b]) => ({
+    a,
+    b,
+    d: deferredCounts.get(pairKey(a, b)) || 0,
+  }));
+  scored.sort((x, y) => {
+    if (x.d !== y.d) return x.d - y.d;
+    return Math.random() - 0.5;
+  });
+  return [scored[0].a, scored[0].b];
+}
+
+function extractRanking(tracks) {
+  const n = tracks.length;
+  const idToTrack = new Map(tracks.map((t) => [t.id, t]));
+  const indeg = new Map();
+  for (const t of tracks) indeg.set(t.id, 0);
+  for (const [, losers] of preferenceAdj) {
+    for (const l of losers) {
+      indeg.set(l, (indeg.get(l) || 0) + 1);
+    }
+  }
+  const q = [];
+  for (const t of tracks) {
+    if ((indeg.get(t.id) || 0) === 0) q.push(t.id);
+  }
+  const ranked = [];
+  while (q.length) {
+    if (q.length > 1) {
+      throw new Error("Ranking ambiguous; need more comparisons.");
+    }
+    const id = q.shift();
+    ranked.push(idToTrack.get(id));
+    for (const l of preferenceAdj.get(id) || []) {
+      indeg.set(l, indeg.get(l) - 1);
+      if (indeg.get(l) === 0) q.push(l);
+    }
+  }
+  if (ranked.length !== n) {
+    throw new Error("Preferential cycle detected; try ranking again.");
+  }
+  return ranked;
+}
+
+function setDeferButtonVisible(show) {
+  document.getElementById("btn-skip-pair")?.classList.toggle("hidden", !show);
+  document.getElementById("skip-hint")?.classList.toggle("hidden", !show);
+}
+
+async function rankWithPartialOrder(tracks) {
+  const deferredCounts = new Map();
+  for (;;) {
+    const incomparable = findIncomparablePairs(tracks);
+    if (incomparable.length === 0) {
+      return extractRanking(tracks);
+    }
+    const [a, b] = pickNextPair(incomparable, deferredCounts);
+    const key = pairKey(a, b);
+    const canDefer = incomparable.length > 1;
+    const cmp = await compareTracks(a, b, canDefer);
+    if (cmp === 0) {
+      if (canDefer) {
+        deferredCounts.set(key, (deferredCounts.get(key) || 0) + 1);
+        continue;
+      }
+      const tie = Math.random() < 0.5 ? -1 : 1;
+      if (tie < 0) recordPreference(a.id, b.id);
+      else recordPreference(b.id, a.id);
+    } else if (cmp < 0) {
+      recordPreference(a.id, b.id);
+    } else {
+      recordPreference(b.id, a.id);
+    }
+  }
 }
 
 function applyMaxTracksLimit(order) {
@@ -547,11 +609,14 @@ function deleteSelectedSaved() {
   status.classList.remove("error");
 }
 
-function compareTracks(a, b) {
+function compareTracks(a, b, canDefer = true) {
   return new Promise((resolve) => {
-    pendingResolve = resolve;
-    compareStep += 1;
-    updateProgress();
+    pendingResolve = (value) => {
+      if (value !== 0) compareStep += 1;
+      updateProgress();
+      resolve(value);
+    };
+    setDeferButtonVisible(canDefer);
     renderPair(a, b);
   });
 }
@@ -594,10 +659,7 @@ async function runRanking(tracks) {
   showComparePanel(true);
   showResultsPanel(false);
 
-  const ranked = await mergeSortByCompare(order, async (a, b) => {
-    if (a.id === b.id) return 0;
-    return compareWithTransitiveCache(a, b);
-  });
+  const ranked = await rankWithPartialOrder(order);
 
   showComparePanel(false);
   showResultsPanel(true);

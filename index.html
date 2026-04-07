@@ -18,7 +18,7 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=10" />
+  <link rel="stylesheet" href="styles.css?v=11" />
 </head>
 <body>
   <div class="app">
@@ -137,8 +137,8 @@
       </div>
       <div class="skip-pair">
         <button type="button" id="btn-skip-pair" class="btn secondary">Skip for now</button>
-        <p class="hint small">
-          No preference between these two — we’ll put one ahead of the other at random for this round so ranking can continue.
+        <p class="hint small" id="skip-hint">
+          Come back to this matchup after other comparisons narrow things down. If this is the last open question, you’ll need to pick a side.
         </p>
       </div>
     </section>
@@ -159,7 +159,7 @@
       <p id="copy-status" class="status"></p>
     </section>
   </div>
-  <script src="config.js?v=10"></script>
-  <script src="app.js?v=10" defer></script>
+  <script src="config.js?v=11"></script>
+  <script src="app.js?v=11" defer></script>
 </body>
 </html>
