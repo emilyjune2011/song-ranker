@@ -112,6 +112,17 @@ textarea {
   font-family: inherit;
 }
 
+select.select-input {
+  width: 100%;
+  padding: 0.65rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 1rem;
+  font-family: inherit;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;

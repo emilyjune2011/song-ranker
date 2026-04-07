@@ -18,7 +18,7 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body>
   <div class="app">
@@ -73,6 +73,19 @@
       <div class="actions">
         <button type="button" id="btn-manual" class="btn secondary">Use manual list</button>
       </div>
+
+      <h2>Saved rankings</h2>
+      <p class="hint">Lists you save stay in this browser on this device only (not on Spotify’s servers).</p>
+      <div class="row">
+        <label for="saved-pick">Open a list you saved before</label>
+        <select id="saved-pick" class="select-input">
+          <option value="">— Choose a saved list —</option>
+        </select>
+      </div>
+      <div class="actions">
+        <button type="button" id="btn-load-saved" class="btn secondary">Load</button>
+        <button type="button" id="btn-delete-saved" class="btn secondary">Delete selected</button>
+      </div>
     </section>
 
     <section id="panel-compare" class="panel hidden">
@@ -123,7 +136,12 @@
     <section id="panel-results" class="panel hidden">
       <h2>Your ranking</h2>
       <ol id="ranked-list" class="ranked-list"></ol>
+      <div class="row">
+        <label for="save-name">Name (optional)</label>
+        <input id="save-name" type="text" autocomplete="off" placeholder="e.g. My top tracks — April 2026" />
+      </div>
       <div class="actions">
+        <button type="button" id="btn-save-ranking" class="btn secondary">Save to this browser</button>
         <button type="button" id="btn-export" class="btn secondary">Copy list as text</button>
         <button type="button" id="btn-restart" class="btn primary">Rank again (same songs)</button>
         <button type="button" id="btn-new" class="btn secondary">Start over</button>
@@ -131,7 +149,7 @@
       <p id="copy-status" class="status"></p>
     </section>
   </div>
-  <script src="config.js?v=4"></script>
-  <script src="app.js?v=4" defer></script>
+  <script src="config.js?v=5"></script>
+  <script src="app.js?v=5" defer></script>
 </body>
 </html>

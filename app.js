@@ -9,6 +9,7 @@ const AUTH_SCOPES = [
 ].join(" ");
 
 const LS_CLIENT = "song_ranker_spotify_client_id";
+const LS_SAVED_RANKINGS = "song_ranker_saved_rankings";
 const SS_VERIFIER = "song_ranker_pkce_verifier";
 const SS_TOKEN = "song_ranker_access_token";
 const SS_EXPIRES = "song_ranker_token_expires_at";
@@ -370,6 +371,128 @@ function shuffleInPlace(arr) {
   }
 }
 
+function newSaveId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `s-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function getSavedRankings() {
+  try {
+    const raw = localStorage.getItem(LS_SAVED_RANKINGS);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+function setSavedRankings(list) {
+  localStorage.setItem(LS_SAVED_RANKINGS, JSON.stringify(list));
+}
+
+function refreshSavedPicker() {
+  const sel = document.getElementById("saved-pick");
+  if (!sel) return;
+  const list = getSavedRankings();
+  const sorted = [...list].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  sel.innerHTML = '<option value="">— Choose a saved list —</option>';
+  for (const s of sorted) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    const label = (s.name || "Untitled").slice(0, 80);
+    const date = s.savedAt ? new Date(s.savedAt).toLocaleDateString() : "";
+    opt.textContent = date ? `${label} · ${date}` : label;
+    sel.appendChild(opt);
+  }
+}
+
+function renderRankedList(ranked) {
+  const ol = document.getElementById("ranked-list");
+  if (!ol) return;
+  ol.innerHTML = "";
+  ranked.forEach((t, idx) => {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = t.url || "#";
+    a.target = "_blank";
+    a.rel = "noopener";
+    a.textContent = `${idx + 1}. ${t.name}${t.artists ? ` — ${t.artists}` : ""}`;
+    li.appendChild(a);
+    ol.appendChild(li);
+  });
+}
+
+function saveCurrentRanking() {
+  const ranked = window.__lastRanked;
+  const status = document.getElementById("copy-status");
+  if (!ranked?.length) {
+    status.textContent = "Nothing to save.";
+    return;
+  }
+  let name = (document.getElementById("save-name")?.value || "").trim();
+  if (!name) name = `Ranking ${new Date().toLocaleString()}`;
+  const list = getSavedRankings();
+  list.push({
+    id: newSaveId(),
+    name,
+    savedAt: Date.now(),
+    tracks: ranked.map((t) => ({ ...t })),
+  });
+  try {
+    setSavedRankings(list);
+    refreshSavedPicker();
+    status.textContent = "Saved to this browser.";
+    const sn = document.getElementById("save-name");
+    if (sn) sn.value = "";
+  } catch {
+    status.textContent = "Could not save (storage blocked or full).";
+  }
+}
+
+function loadSelectedSaved() {
+  const sel = document.getElementById("saved-pick");
+  const status = document.getElementById("load-status");
+  const id = sel?.value;
+  if (!id) {
+    status.textContent = "Choose a saved list first.";
+    status.classList.add("error");
+    return;
+  }
+  const found = getSavedRankings().find((s) => s.id === id);
+  if (!found?.tracks?.length) {
+    status.textContent = "Could not load that list.";
+    status.classList.add("error");
+    return;
+  }
+  const ranked = found.tracks.map((t) => ({ ...t }));
+  window.__lastRanked = ranked;
+  renderRankedList(ranked);
+  showComparePanel(false);
+  showResultsPanel(true);
+  document.getElementById("panel-setup")?.classList.add("hidden");
+  status.textContent = "";
+  status.classList.remove("error");
+  document.getElementById("copy-status").textContent = "";
+}
+
+function deleteSelectedSaved() {
+  const sel = document.getElementById("saved-pick");
+  const status = document.getElementById("load-status");
+  const id = sel?.value;
+  if (!id) {
+    status.textContent = "Choose a saved list first.";
+    status.classList.add("error");
+    return;
+  }
+  if (!confirm("Delete this saved ranking from this browser?")) return;
+  const next = getSavedRankings().filter((s) => s.id !== id);
+  setSavedRankings(next);
+  refreshSavedPicker();
+  status.textContent = "Deleted.";
+  status.classList.remove("error");
+}
+
 function compareTracks(a, b) {
   return new Promise((resolve) => {
     pendingResolve = resolve;
@@ -415,20 +538,8 @@ async function runRanking(tracks) {
 
   showComparePanel(false);
   showResultsPanel(true);
-  const ol = document.getElementById("ranked-list");
-  ol.innerHTML = "";
-  ranked.forEach((t, idx) => {
-    const li = document.createElement("li");
-    const a = document.createElement("a");
-    a.href = t.url;
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.textContent = `${idx + 1}. ${t.name}${t.artists ? ` — ${t.artists}` : ""}`;
-    li.appendChild(a);
-    ol.appendChild(li);
-  });
-
   window.__lastRanked = ranked;
+  renderRankedList(ranked);
 }
 
 function exchangeCodeForToken(code, verifier, clientId) {
@@ -507,6 +618,7 @@ async function startLogin() {
 }
 
 function init() {
+  refreshSavedPicker();
   setRedirectDisplay();
   if (window.location.protocol === "file:") {
     const auth = document.getElementById("auth-status");
@@ -608,6 +720,11 @@ function init() {
     await runRanking(tracks);
   });
 
+  document.getElementById("btn-save-ranking")?.addEventListener("click", saveCurrentRanking);
+
+  document.getElementById("btn-load-saved")?.addEventListener("click", loadSelectedSaved);
+  document.getElementById("btn-delete-saved")?.addEventListener("click", deleteSelectedSaved);
+
   document.getElementById("btn-export")?.addEventListener("click", () => {
     const ranked = window.__lastRanked;
     const copyStatus = document.getElementById("copy-status");
@@ -639,6 +756,8 @@ function init() {
     document.getElementById("panel-setup")?.classList.remove("hidden");
     document.getElementById("load-status").textContent = "";
     document.getElementById("copy-status").textContent = "";
+    const sn = document.getElementById("save-name");
+    if (sn) sn.value = "";
   });
 }
 
