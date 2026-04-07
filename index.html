@@ -18,7 +18,7 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=21" />
+  <link rel="stylesheet" href="styles.css?v=22" />
 </head>
 <body>
   <div class="app">
@@ -51,6 +51,14 @@
 
       <h2>2. Load</h2>
       <p class="hint">Playlist, artist, or album link — or a preset below.</p>
+      <div class="row row-tight">
+        <label for="ranking-mode">Goal</label>
+        <select id="ranking-mode" class="select-input">
+          <option value="full">Complete ranking (all songs)</option>
+          <option value="25">Top 25 only (fewer comparisons)</option>
+          <option value="100">Top 100 only (fewer comparisons)</option>
+        </select>
+      </div>
       <div id="preset-buttons" class="preset-buttons"></div>
       <div class="row row-tight">
         <label for="spotify-url">URL</label>
@@ -160,6 +168,7 @@
         <button type="button" id="btn-back-home-results" class="btn secondary btn-sm">← Home</button>
       </div>
       <h2>Results</h2>
+      <p id="results-mode-hint" class="hint hint-tight hidden" role="status"></p>
       <ol id="ranked-list" class="ranked-list"></ol>
       <div class="row row-tight">
         <label for="save-name">Save as</label>
@@ -176,7 +185,7 @@
       <p id="copy-status" class="status status-tight"></p>
     </section>
   </div>
-  <script src="config.js?v=21"></script>
-  <script src="app.js?v=21" defer></script>
+  <script src="config.js?v=22"></script>
+  <script src="app.js?v=22" defer></script>
 </body>
 </html>

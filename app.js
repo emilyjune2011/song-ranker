@@ -365,6 +365,14 @@ function estimateMergeComparisons(n) {
   return Math.ceil(n * Math.ceil(Math.log2(n)));
 }
 
+/** Rough upper bound for “top k” mode (fewer pairs than full sort when k ≪ n). */
+function estimateTopNComparisons(n, k) {
+  if (n <= 1) return 0;
+  if (!k || k >= n) return estimateMergeComparisons(n);
+  const kk = Math.min(k, n);
+  return Math.ceil(n * Math.ceil(Math.log2(kk + 1)));
+}
+
 function updateProgress() {
   const fill = document.getElementById("progress-fill");
   const text = document.getElementById("progress-text");
@@ -448,6 +456,8 @@ let rankingDeferredCounts = new Map();
 let rankingAbortRequested = false;
 /** Playlist / artist / album (or guessed) label for default save names. */
 let rankingSourceLabel = null;
+/** null = full order; number = stop at top N (fewer comparisons). */
+let currentRankingTopN = null;
 
 function resetPreferenceGraph() {
   preferenceAdj = new Map();
@@ -507,6 +517,20 @@ function findIncomparablePairs(tracks) {
   return pairs;
 }
 
+function countStrictlyPreferredAbove(allTracks, trackId) {
+  let c = 0;
+  for (const o of allTracks) {
+    if (o.id === trackId) continue;
+    if (isPreferredOver(o.id, trackId)) c += 1;
+  }
+  return c;
+}
+
+/** Tracks that can still place in the top-N band (fewer than N others strictly above). */
+function getActiveTracksForTopN(allTracks, topN) {
+  return allTracks.filter((t) => countStrictlyPreferredAbove(allTracks, t.id) < topN);
+}
+
 function pickNextPair(pairs) {
   const scored = pairs.map(([a, b]) => ({
     a,
@@ -542,6 +566,43 @@ function extractRanking(tracks) {
     const id = q.shift();
     ranked.push(idToTrack.get(id));
     for (const l of preferenceAdj.get(id) || []) {
+      indeg.set(l, indeg.get(l) - 1);
+      if (indeg.get(l) === 0) q.push(l);
+    }
+  }
+  if (ranked.length !== n) {
+    throw new Error("Preferential cycle detected; try ranking again.");
+  }
+  return ranked;
+}
+
+function extractRankingSubset(subsetTracks) {
+  const ids = new Set(subsetTracks.map((t) => t.id));
+  const n = subsetTracks.length;
+  const idToTrack = new Map(subsetTracks.map((t) => [t.id, t]));
+  const indeg = new Map();
+  for (const t of subsetTracks) indeg.set(t.id, 0);
+  for (const t of subsetTracks) {
+    const w = t.id;
+    for (const l of preferenceAdj.get(w) || []) {
+      if (ids.has(l)) {
+        indeg.set(l, (indeg.get(l) || 0) + 1);
+      }
+    }
+  }
+  const q = [];
+  for (const t of subsetTracks) {
+    if ((indeg.get(t.id) || 0) === 0) q.push(t.id);
+  }
+  const ranked = [];
+  while (q.length) {
+    if (q.length > 1) {
+      throw new Error("Ranking ambiguous; need more comparisons.");
+    }
+    const id = q.shift();
+    ranked.push(idToTrack.get(id));
+    for (const l of preferenceAdj.get(id) || []) {
+      if (!ids.has(l)) continue;
       indeg.set(l, indeg.get(l) - 1);
       if (indeg.get(l) === 0) q.push(l);
     }
@@ -617,6 +678,7 @@ function buildProgressSnapshot() {
     compareStep,
     compareEstimate,
     sourceLabel: rankingSourceLabel || null,
+    rankingTopN: currentRankingTopN ?? null,
   };
 }
 
@@ -631,8 +693,17 @@ function applyResumeSnapshot(snap, order) {
     if (ta && tb) undoForcedPair = [ta, tb];
   }
   compareStep = snap.compareStep ?? 0;
-  compareEstimate = snap.compareEstimate ?? estimateMergeComparisons(order.length);
   rankingSourceLabel = snap.sourceLabel || guessLabelFromTracks(order);
+  currentRankingTopN = snap.rankingTopN != null ? Math.min(snap.rankingTopN, order.length) : null;
+  if (currentRankingTopN != null && (currentRankingTopN < 2 || currentRankingTopN >= order.length)) {
+    currentRankingTopN = null;
+  }
+  syncRankingModeSelect(currentRankingTopN, order.length);
+  compareEstimate =
+    snap.compareEstimate ??
+    (currentRankingTopN != null
+      ? estimateTopNComparisons(order.length, currentRankingTopN)
+      : estimateMergeComparisons(order.length));
 }
 
 function isValidProgressSnapshot(o) {
@@ -696,14 +767,21 @@ function refreshProgressPicker() {
       opt.value = "__autosave__";
       const n = snap.tracks?.length || "?";
       const t = snap.savedAt ? new Date(snap.savedAt).toLocaleString() : "";
-      opt.textContent = `In progress · ${n} songs · ${t}`;
+      const mode =
+        snap.rankingTopN != null && snap.rankingTopN >= 2 ? ` · top ${snap.rankingTopN}` : "";
+      opt.textContent = `In progress · ${n} songs${mode} · ${t}`;
       sel.appendChild(opt);
     } catch (_) {}
   }
   for (const s of getNamedProgressList().sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0))) {
     const opt = document.createElement("option");
     opt.value = s.id;
-    opt.textContent = (s.name || "Untitled").slice(0, 72);
+    const base = (s.name || "Untitled").slice(0, 72);
+    const mode =
+      s.snapshot?.rankingTopN != null && s.snapshot.rankingTopN >= 2
+        ? ` · top ${s.snapshot.rankingTopN}`
+        : "";
+    opt.textContent = `${base}${mode}`;
     sel.appendChild(opt);
   }
 }
@@ -889,7 +967,48 @@ function setDeferButtonVisible(show) {
   document.getElementById("skip-hint")?.classList.toggle("hidden", !show);
 }
 
-async function rankWithPartialOrder(tracks) {
+function getRankingModeFromUI(trackCount) {
+  const sel = document.getElementById("ranking-mode");
+  const v = sel?.value ?? "full";
+  if (v === "full") return { topN: null };
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n) || n < 2) return { topN: null };
+  if (n >= trackCount) return { topN: null };
+  return { topN: n };
+}
+
+function syncRankingModeSelect(topN, trackCount) {
+  const sel = document.getElementById("ranking-mode");
+  if (!sel) return;
+  if (topN == null || topN < 2 || topN >= trackCount) {
+    sel.value = "full";
+    return;
+  }
+  if (topN === 25) sel.value = "25";
+  else if (topN === 100) sel.value = "100";
+  else sel.value = "full";
+}
+
+async function rankWithPartialOrder(tracks, options = {}) {
+  let topN = options.topN;
+  if (topN != null && (topN >= tracks.length || topN < 2)) topN = null;
+
+  function getIncomparablePairs() {
+    if (!topN) return findIncomparablePairs(tracks);
+    const active = getActiveTracksForTopN(tracks, topN);
+    return findIncomparablePairs(active);
+  }
+
+  function finishTopNIfComplete() {
+    if (!topN) return null;
+    const active = getActiveTracksForTopN(tracks, topN);
+    if (active.length === 0) {
+      throw new Error("Could not determine a top list — try again.");
+    }
+    const ranked = extractRankingSubset(active);
+    return ranked.slice(0, topN);
+  }
+
   for (;;) {
     if (rankingAbortRequested) {
       rankingAbortRequested = false;
@@ -901,11 +1020,16 @@ async function rankWithPartialOrder(tracks) {
     if (undoForcedPair) {
       [a, b] = undoForcedPair;
       undoForcedPair = null;
-      const incomparable = findIncomparablePairs(tracks);
+      const incomparable = getIncomparablePairs();
+      if (incomparable.length === 0) {
+        if (topN) return finishTopNIfComplete();
+        return extractRanking(tracks);
+      }
       canDefer = incomparable.length > 1;
     } else {
-      const incomparable = findIncomparablePairs(tracks);
+      const incomparable = getIncomparablePairs();
       if (incomparable.length === 0) {
+        if (topN) return finishTopNIfComplete();
         return extractRanking(tracks);
       }
       [a, b] = pickNextPair(incomparable);
@@ -1183,7 +1307,18 @@ async function runRanking(tracks, options = {}) {
     shuffleInPlace(order);
     resetPreferenceGraph();
     compareStep = 0;
-    compareEstimate = estimateMergeComparisons(order.length);
+    let effTop =
+      options.topN !== undefined ? options.topN : getRankingModeFromUI(order.length).topN;
+    if (effTop != null) {
+      effTop = Math.min(Math.floor(effTop), order.length);
+      if (effTop < 2 || effTop >= order.length) effTop = null;
+    }
+    currentRankingTopN = effTop;
+    compareEstimate =
+      currentRankingTopN != null
+        ? estimateTopNComparisons(order.length, currentRankingTopN)
+        : estimateMergeComparisons(order.length);
+    if (options.topN !== undefined) syncRankingModeSelect(currentRankingTopN, order.length);
     currentRankingOrder = order;
     const sl = options.sourceLabel;
     rankingSourceLabel =
@@ -1195,10 +1330,20 @@ async function runRanking(tracks, options = {}) {
   showResultsPanel(false);
 
   try {
-    const ranked = await rankWithPartialOrder(order);
+    const ranked = await rankWithPartialOrder(order, { topN: currentRankingTopN });
     showComparePanel(false);
     showResultsPanel(true);
     window.__lastRanked = ranked;
+    const hint = document.getElementById("results-mode-hint");
+    if (hint) {
+      if (currentRankingTopN != null && currentRankingTopN < order.length) {
+        hint.textContent = `Goal: top ${currentRankingTopN} (of ${order.length} loaded).`;
+        hint.classList.remove("hidden");
+      } else {
+        hint.textContent = "";
+        hint.classList.add("hidden");
+      }
+    }
     renderRankedList(ranked);
     applySaveNameSuggestion();
     clearProgressAutosave();
@@ -1226,6 +1371,7 @@ async function runRanking(tracks, options = {}) {
     rankingAbortRequested = false;
     currentRankingOrder = null;
     pendingPairForSave = null;
+    currentRankingTopN = null;
   }
 }
 
