@@ -159,7 +159,7 @@ async function fetchAlbumTracks(albumId) {
 async function fetchArtistTracks(artistId) {
   const albumNames = new Map();
   const albums = new Set();
-  let url = `/artists/${encodeURIComponent(artistId)}/albums?include_groups=album,single&limit=50`;
+  let url = `/artists/${encodeURIComponent(artistId)}/albums?include_groups=album,single&limit=10`;
   while (url) {
     const data = await api(url);
     for (const a of data.items || []) {
