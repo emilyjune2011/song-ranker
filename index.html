@@ -18,99 +18,89 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=20" />
+  <link rel="stylesheet" href="styles.css?v=21" />
 </head>
 <body>
   <div class="app">
     <header class="header">
       <h1>Song ranker</h1>
-      <p class="tagline">Pick the better song until your list is sorted. Works with Spotify links.</p>
+      <p class="tagline">Pairwise sort for Spotify playlists & albums.</p>
     </header>
 
     <section id="panel-setup" class="panel">
-      <h2>1. Connect Spotify</h2>
+      <h2>1. Sign in</h2>
       <p id="hint-connect" class="hint">
-        If this copy is <strong>hosted</strong>, the owner sets it up once; you only need your own Spotify account. Click
-        <strong>Sign in with Spotify</strong>. If you are the one deploying, add redirect URI
-        <code id="redirect-uri-display"></code> in the
-        <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify Developer Dashboard</a>
-        for your app (must match this page’s address exactly).
+        Redirect URI for your app: <code id="redirect-uri-display"></code> — add it in the
+        <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify dashboard</a>.
       </p>
       <div id="client-setup-block">
-        <p class="hint">
-          <strong>Local / no hosting:</strong> create an app in the dashboard, add the redirect URI above, paste your
-          Client ID here and save — or put it in <code>config.js</code> if you deploy.
-        </p>
-        <div class="row">
-          <label for="client-id">Client ID (optional if set in config.js)</label>
-          <input id="client-id" type="text" autocomplete="off" placeholder="Your Spotify Client ID" />
+        <p class="hint">Local: paste Client ID or use <code>config.js</code>.</p>
+        <div class="row row-tight">
+          <label for="client-id">Client ID</label>
+          <input id="client-id" type="text" autocomplete="off" placeholder="Optional if set in config.js" />
         </div>
-        <div class="actions">
-          <button type="button" id="btn-save-client" class="btn secondary">Save Client ID</button>
+        <div class="actions actions-tight">
+          <button type="button" id="btn-save-client" class="btn secondary btn-sm">Save</button>
         </div>
       </div>
-      <div class="actions">
+      <div class="actions actions-tight">
         <button type="button" id="btn-login" class="btn primary">Sign in with Spotify</button>
       </div>
       <p id="user-display" class="user-display hidden" role="status" aria-live="polite"></p>
       <p id="auth-status" class="status"></p>
 
-      <h2>2. Load songs</h2>
-      <p class="hint">
-        Paste a Spotify link to a <strong>playlist</strong>, <strong>artist</strong>, or <strong>album</strong> (open in Spotify → Share → Copy link), or tap a preset to load that artist’s catalog.
-      </p>
+      <h2>2. Load</h2>
+      <p class="hint">Playlist, artist, or album link — or a preset below.</p>
       <div id="preset-buttons" class="preset-buttons"></div>
-      <div class="row">
-        <label for="spotify-url">Spotify URL</label>
-        <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/… or …/artist/…" />
+      <div class="row row-tight">
+        <label for="spotify-url">URL</label>
+        <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/…" />
       </div>
-      <div class="actions">
-        <button type="button" id="btn-load" class="btn primary" disabled>Load tracks</button>
+      <div class="actions actions-tight">
+        <button type="button" id="btn-load" class="btn primary" disabled>Load</button>
       </div>
       <p id="load-status" class="status"></p>
 
-      <h2>Your lists & backups</h2>
-      <p class="hint">
-        Signing in connects your <strong>Spotify account</strong> so we can load playlists. Your rankings and half-done sessions stay <strong>on this device</strong>—we don’t store them on a server.
-        To use another phone or computer, <strong>Download backup</strong> here and <strong>Upload backup</strong> there.
-      </p>
+      <h2 class="h2-tight">Saved</h2>
+      <p class="hint hint-tight">On this device only. Use backup to move to another device.</p>
 
-      <h3 class="subsection-title">Not finished yet</h3>
-      <p class="hint small">
-        Your place is remembered automatically while you rank. Pick a session to continue, or use backup files to move one elsewhere.
-      </p>
-      <div class="row">
-        <label for="progress-pick">Session</label>
-        <select id="progress-pick" class="select-input">
-          <option value="">— Pick a session —</option>
-        </select>
-      </div>
-      <div class="actions">
-        <button type="button" id="btn-resume-progress" class="btn primary">Continue</button>
-        <button type="button" id="btn-save-progress-named" class="btn secondary">Save a copy</button>
-        <button type="button" id="btn-delete-progress" class="btn secondary">Delete</button>
-      </div>
-      <div class="actions">
-        <button type="button" id="btn-export-progress-json" class="btn secondary">Download backup</button>
-        <button type="button" id="btn-import-progress" class="btn secondary">Upload backup</button>
-        <input type="file" id="import-progress-file" accept=".json,application/json" hidden />
-      </div>
-      <p id="progress-status" class="status"></p>
+      <details class="panel-details">
+        <summary>In progress</summary>
+        <div class="details-body">
+          <div class="row row-tight">
+            <label for="progress-pick">Session</label>
+            <select id="progress-pick" class="select-input">
+              <option value="">— Pick —</option>
+            </select>
+          </div>
+          <div class="actions actions-tight">
+            <button type="button" id="btn-resume-progress" class="btn primary btn-sm">Continue</button>
+            <button type="button" id="btn-save-progress-named" class="btn secondary btn-sm">Copy</button>
+            <button type="button" id="btn-delete-progress" class="btn secondary btn-sm">Delete</button>
+          </div>
+          <div class="actions actions-tight">
+            <button type="button" id="btn-export-progress-json" class="btn secondary btn-sm">Download backup</button>
+            <button type="button" id="btn-import-progress" class="btn secondary btn-sm">Upload backup</button>
+            <input type="file" id="import-progress-file" accept=".json,application/json" hidden />
+          </div>
+          <p id="progress-status" class="status status-tight"></p>
+        </div>
+      </details>
 
-      <h3 class="subsection-title">Finished rankings</h3>
-      <p class="hint">
-        <strong>Tap a row</strong> to open it. <strong>Remove</strong> deletes it from this device only.
-      </p>
-      <ul id="saved-rankings-list" class="saved-rankings-list" role="list"></ul>
-      <p id="saved-rankings-empty" class="hint saved-rankings-empty hidden">
-        Nothing here yet. When you finish a ranking, tap <strong>Keep this list</strong> on the results screen.
-      </p>
-      <p id="saved-rankings-status" class="status"></p>
+      <details class="panel-details">
+        <summary>Finished lists</summary>
+        <div class="details-body">
+          <p class="hint hint-tight details-hint">Tap a row to open. Remove deletes from this device.</p>
+          <ul id="saved-rankings-list" class="saved-rankings-list" role="list"></ul>
+          <p id="saved-rankings-empty" class="hint saved-rankings-empty hidden">Nothing saved yet.</p>
+          <p id="saved-rankings-status" class="status status-tight"></p>
+        </div>
+      </details>
     </section>
 
     <section id="panel-compare" class="panel hidden">
       <div class="panel-nav">
-        <button type="button" id="btn-back-home-compare" class="btn secondary">← Home</button>
+        <button type="button" id="btn-back-home-compare" class="btn secondary btn-sm">← Home</button>
       </div>
       <div class="progress-wrap">
         <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
@@ -153,42 +143,40 @@
       </div>
       <div class="skip-pair">
         <div class="compare-extras">
-          <button type="button" id="btn-undo" class="btn secondary" disabled>Undo last choice</button>
-          <button type="button" id="btn-skip-pair" class="btn secondary">Skip for now</button>
+          <button type="button" id="btn-undo" class="btn secondary btn-sm" disabled>Undo</button>
+          <button type="button" id="btn-skip-pair" class="btn secondary btn-sm">Skip</button>
         </div>
-        <p class="hint small" id="skip-hint">
-          Come back to this matchup after other comparisons narrow things down. If this is the last open question, you’ll need to pick a side.
-        </p>
+        <p class="hint small" id="skip-hint">Defer to compare other pairs first. Last matchup needs a pick.</p>
       </div>
       <div class="compare-save-row">
-        <button type="button" id="btn-save-ranking-progress" class="btn secondary">Save now</button>
+        <button type="button" id="btn-save-ranking-progress" class="btn secondary btn-sm">Save</button>
         <span id="compare-save-status" class="hint small" role="status"></span>
       </div>
-      <p class="hint small">Your place is saved automatically after each choice (and after undo). Use Save now if you want to force it.</p>
+      <p class="hint small compare-hint">Auto-saved each round.</p>
     </section>
 
     <section id="panel-results" class="panel hidden">
       <div class="panel-nav">
-        <button type="button" id="btn-back-home-results" class="btn secondary">← Home</button>
+        <button type="button" id="btn-back-home-results" class="btn secondary btn-sm">← Home</button>
       </div>
-      <h2>Your ranking</h2>
+      <h2>Results</h2>
       <ol id="ranked-list" class="ranked-list"></ol>
-      <div class="row">
-        <label for="save-name">Name when saving (you can edit)</label>
-        <input id="save-name" type="text" autocomplete="off" placeholder="Filled in from playlist, artist, or album when possible" />
+      <div class="row row-tight">
+        <label for="save-name">Save as</label>
+        <input id="save-name" type="text" autocomplete="off" placeholder="Prefilled from source" />
       </div>
-      <div class="actions">
-        <button type="button" id="btn-save-ranking" class="btn secondary">Keep this list</button>
-        <button type="button" id="btn-export" class="btn secondary">Copy as text</button>
-        <button type="button" id="btn-export-json" class="btn secondary">Download JSON</button>
-        <button type="button" id="btn-export-csv" class="btn secondary">Download spreadsheet (CSV)</button>
-        <button type="button" id="btn-restart" class="btn primary">Rank again (same songs)</button>
-        <button type="button" id="btn-new" class="btn secondary">Start over</button>
+      <div class="actions actions-tight">
+        <button type="button" id="btn-save-ranking" class="btn secondary btn-sm">Keep</button>
+        <button type="button" id="btn-export" class="btn secondary btn-sm">Copy</button>
+        <button type="button" id="btn-export-json" class="btn secondary btn-sm">JSON</button>
+        <button type="button" id="btn-export-csv" class="btn secondary btn-sm">CSV</button>
+        <button type="button" id="btn-restart" class="btn primary btn-sm">Rank again</button>
+        <button type="button" id="btn-new" class="btn secondary btn-sm">New</button>
       </div>
-      <p id="copy-status" class="status"></p>
+      <p id="copy-status" class="status status-tight"></p>
     </section>
   </div>
-  <script src="config.js?v=20"></script>
-  <script src="app.js?v=20" defer></script>
+  <script src="config.js?v=21"></script>
+  <script src="app.js?v=21" defer></script>
 </body>
 </html>

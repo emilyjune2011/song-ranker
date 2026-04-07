@@ -371,9 +371,7 @@ function updateProgress() {
   if (!fill || !text) return;
   const pct = compareEstimate ? Math.min(100, (compareStep / compareEstimate) * 100) : 0;
   fill.style.width = `${pct}%`;
-  text.textContent = compareEstimate
-    ? `Question ${compareStep} of ~${compareEstimate} (upper bound; skips don’t count as decisions)`
-    : "";
+  text.textContent = compareEstimate ? `~${compareStep} / ~${compareEstimate} choices` : "";
 }
 
 function showComparePanel(show) {
@@ -690,7 +688,7 @@ function refreshProgressPicker() {
   const sel = document.getElementById("progress-pick");
   if (!sel) return;
   const autosave = localStorage.getItem(LS_PROGRESS_AUTOSAVE);
-  sel.innerHTML = '<option value="">— Pick a session —</option>';
+  sel.innerHTML = '<option value="">— Pick —</option>';
   if (autosave) {
     try {
       const snap = JSON.parse(autosave);
@@ -1349,7 +1347,7 @@ function init() {
     const auth = document.getElementById("auth-status");
     if (auth) {
       auth.textContent =
-        "Open this folder over HTTP (not file://) so Spotify sign-in works. In a terminal: cd here, then run: python3 -m http.server 8765 — then visit http://127.0.0.1:8765/";
+        "Open over HTTP, not file://. Try: python3 -m http.server 8765 → http://127.0.0.1:8765/";
       auth.classList.add("error");
     }
   }
@@ -1362,7 +1360,7 @@ function init() {
     clientSetup.classList.add("hidden");
     if (hintConnect) {
       hintConnect.innerHTML =
-        "Click <strong>Sign in with Spotify</strong> and use your Spotify account. (The site owner has already connected this app to Spotify.)";
+        "Tap <strong>Sign in</strong> — this app is already configured for Spotify.";
     }
   }
 

@@ -26,7 +26,7 @@ body {
 .app {
   max-width: 720px;
   margin: 0 auto;
-  padding: 1.5rem 1rem 3rem;
+  padding: 1.1rem 0.9rem 2rem;
 }
 
 .header h1 {
@@ -36,14 +36,15 @@ body {
 }
 
 .tagline {
-  margin: 0 0 1.5rem;
+  margin: 0 0 1rem;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 0.88rem;
+  line-height: 1.4;
 }
 
 .user-display {
-  margin: 0.5rem 0 0;
-  font-size: 0.95rem;
+  margin: 0.35rem 0 0;
+  font-size: 0.88rem;
   color: var(--text);
 }
 
@@ -52,23 +53,78 @@ body {
   font-weight: 650;
 }
 
-.subsection-title {
-  margin: 1.35rem 0 0.35rem;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text);
+.h2-tight {
+  margin-top: 0.85rem !important;
 }
 
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 1.25rem 1.25rem 1.5rem;
-  margin-bottom: 1rem;
+  padding: 1rem 1rem 1.1rem;
+  margin-bottom: 0.75rem;
+}
+
+.panel-details {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin: 0.35rem 0 0;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.panel-details > summary {
+  padding: 0.5rem 0.65rem;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.88rem;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  user-select: none;
+}
+
+.panel-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.panel-details > summary::before {
+  content: "";
+  width: 0.35rem;
+  height: 0.35rem;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.panel-details[open] > summary::before {
+  transform: rotate(45deg);
+  margin-top: -0.1rem;
+}
+
+.panel-details[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.panel-details > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: 6px;
+}
+
+.details-body {
+  padding: 0.55rem 0.65rem 0.65rem;
+}
+
+.details-hint {
+  margin: 0 0 0.4rem !important;
 }
 
 .panel-nav {
-  margin: -0.25rem 0 0.75rem;
+  margin: -0.15rem 0 0.55rem;
 }
 
 .panel-nav .btn {
@@ -77,8 +133,8 @@ body {
 }
 
 .panel h2 {
-  margin: 1.25rem 0 0.5rem;
-  font-size: 1.05rem;
+  margin: 0.95rem 0 0.35rem;
+  font-size: 1rem;
   font-weight: 600;
 }
 
@@ -87,15 +143,26 @@ body {
 }
 
 .hint {
-  margin: 0 0 0.75rem;
+  margin: 0 0 0.5rem;
   color: var(--muted);
-  font-size: 0.88rem;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.hint-tight {
+  margin-bottom: 0.4rem !important;
+  font-size: 0.8rem;
 }
 
 .hint.small {
-  margin-top: 0.75rem;
+  margin-top: 0.45rem;
   margin-bottom: 0;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.compare-hint {
+  margin-top: 0.35rem !important;
 }
 
 .hint code {
@@ -112,12 +179,16 @@ a {
 .row {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
-  margin-bottom: 0.75rem;
+  gap: 0.25rem;
+  margin-bottom: 0.55rem;
+}
+
+.row-tight {
+  margin-bottom: 0.4rem;
 }
 
 label {
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: var(--muted);
 }
 
@@ -125,12 +196,12 @@ input[type="text"],
 input[type="url"],
 textarea {
   width: 100%;
-  padding: 0.65rem 0.75rem;
+  padding: 0.5rem 0.65rem;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
-  font-size: 1rem;
+  font-size: 0.95rem;
 }
 
 textarea {
@@ -141,38 +212,49 @@ textarea {
 
 select.select-input {
   width: 100%;
-  padding: 0.65rem 0.75rem;
+  padding: 0.5rem 0.65rem;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-family: inherit;
 }
 
 .actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
+  gap: 0.4rem;
+  margin-top: 0.35rem;
+}
+
+.actions-tight {
+  margin-top: 0.25rem;
+  margin-bottom: 0;
 }
 
 .preset-buttons {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  margin: 0.35rem 0 0.85rem;
+  gap: 0.4rem;
+  margin: 0.25rem 0 0.55rem;
 }
 
 .btn {
   appearance: none;
   border: none;
   border-radius: 999px;
-  padding: 0.6rem 1.1rem;
-  font-size: 0.95rem;
+  padding: 0.5rem 0.95rem;
+  font-size: 0.9rem;
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
+}
+
+.btn-sm {
+  padding: 0.42rem 0.75rem;
+  font-size: 0.82rem;
+  font-weight: 600;
 }
 
 .btn:disabled {
@@ -200,10 +282,14 @@ select.select-input {
 }
 
 .status {
-  min-height: 1.25em;
-  margin: 0.5rem 0 0;
-  font-size: 0.88rem;
+  min-height: 1.1em;
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
   color: var(--muted);
+}
+
+.status-tight {
+  margin-top: 0.25rem !important;
 }
 
 .status.error {
@@ -215,7 +301,7 @@ select.select-input {
 }
 
 .progress-wrap {
-  margin-bottom: 1rem;
+  margin-bottom: 0.75rem;
 }
 
 .progress-bar {
@@ -242,7 +328,7 @@ select.select-input {
 .duel {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.55rem;
 }
 
 .song-column {
@@ -285,7 +371,7 @@ select.select-input {
 }
 
 .skip-pair {
-  margin-top: 0.75rem;
+  margin-top: 0.55rem;
   text-align: center;
 }
 
@@ -300,10 +386,10 @@ select.select-input {
 .compare-save-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
+  gap: 0.4rem;
   align-items: center;
   justify-content: center;
-  margin-top: 1rem;
+  margin-top: 0.65rem;
 }
 
 .compare-save-row .hint {
@@ -325,7 +411,7 @@ select.select-input {
   background: var(--bg);
   border: 2px solid var(--border);
   border-radius: var(--radius);
-  padding: 1rem 1rem 0.85rem;
+  padding: 0.85rem 0.9rem 0.75rem;
   color: var(--text);
   cursor: pointer;
   transition: border-color 0.15s, transform 0.1s;
@@ -354,12 +440,13 @@ select.select-input {
 }
 
 .ranked-list {
-  margin: 0 0 1rem;
-  padding-left: 1.25rem;
+  margin: 0 0 0.65rem;
+  padding-left: 1.1rem;
+  font-size: 0.95rem;
 }
 
 .ranked-list li {
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.35rem;
 }
 
 .ranked-list a {
@@ -368,15 +455,16 @@ select.select-input {
 
 .saved-rankings-list {
   list-style: none;
-  margin: 0.5rem 0 0;
+  margin: 0.35rem 0 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.4rem;
 }
 
 .saved-rankings-empty {
-  margin-top: 0.5rem;
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
 }
 
 .saved-ranking-item {
