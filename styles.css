@@ -250,6 +250,19 @@ select.select-input {
   padding: 0.25rem;
 }
 
+.skip-pair {
+  margin-top: 0.75rem;
+  text-align: center;
+}
+
+.skip-pair .hint {
+  margin-top: 0.4rem;
+  margin-bottom: 0;
+  max-width: 28rem;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .song-card {
   flex: 1 1 auto;
   text-align: left;

@@ -408,8 +408,11 @@ async function compareWithTransitiveCache(a, b) {
   if (a.id === b.id) return 0;
   if (isPreferredOver(a.id, b.id)) return -1;
   if (isPreferredOver(b.id, a.id)) return 1;
-  const cmp = await compareTracks(a, b);
-  if (cmp <= 0) recordPreference(a.id, b.id);
+  let cmp = await compareTracks(a, b);
+  if (cmp === 0) {
+    cmp = Math.random() < 0.5 ? -1 : 1;
+  }
+  if (cmp < 0) recordPreference(a.id, b.id);
   else recordPreference(b.id, a.id);
   return cmp;
 }
@@ -569,6 +572,13 @@ function wireCompareCards() {
     const r = pendingResolve;
     pendingResolve = null;
     r(1);
+  });
+  document.getElementById("btn-skip-pair")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!pendingResolve) return;
+    const r = pendingResolve;
+    pendingResolve = null;
+    r(0);
   });
 }
 
