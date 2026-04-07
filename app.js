@@ -320,6 +320,27 @@ function showResultsPanel(show) {
   document.getElementById("panel-results")?.classList.toggle("hidden", !show);
 }
 
+function spotifyEmbedSrc(track) {
+  const id = track?.id;
+  if (!id || String(id).startsWith("manual")) return "";
+  return `https://open.spotify.com/embed/track/${encodeURIComponent(id)}?theme=0`;
+}
+
+function setTrackEmbed(iframeId, wrapId, track) {
+  const iframe = document.getElementById(iframeId);
+  const wrap = document.getElementById(wrapId);
+  if (!iframe || !wrap) return;
+  const src = spotifyEmbedSrc(track);
+  if (src) {
+    iframe.src = src;
+    iframe.setAttribute("title", `Spotify preview: ${track.name}`);
+    wrap.classList.remove("hidden");
+  } else {
+    iframe.removeAttribute("src");
+    wrap.classList.add("hidden");
+  }
+}
+
 function renderPair(a, b) {
   document.getElementById("title-a").textContent = a.name;
   document.getElementById("meta-a").textContent = [a.artists, a.album].filter(Boolean).join(" · ");
@@ -329,6 +350,8 @@ function renderPair(a, b) {
   const lb = document.getElementById("link-b");
   la.href = a.url;
   lb.href = b.url;
+  setTrackEmbed("embed-a", "embed-wrap-a", a);
+  setTrackEmbed("embed-b", "embed-wrap-b", b);
 }
 
 function compareTracks(a, b) {

@@ -209,6 +209,26 @@ textarea {
   gap: 0.75rem;
 }
 
+.song-column {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.embed-wrap {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: #121212;
+}
+
+.spotify-embed {
+  display: block;
+  border: 0;
+}
+
 @media (min-width: 560px) {
   .duel {
     flex-direction: row;
@@ -229,7 +249,7 @@ textarea {
 }
 
 .song-card {
-  flex: 1;
+  flex: 1 1 auto;
   text-align: left;
   background: var(--bg);
   border: 2px solid var(--border);
