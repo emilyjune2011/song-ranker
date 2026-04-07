@@ -41,6 +41,24 @@ body {
   font-size: 0.95rem;
 }
 
+.user-display {
+  margin: 0.5rem 0 0;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.user-display strong {
+  color: var(--accent);
+  font-weight: 650;
+}
+
+.subsection-title {
+  margin: 1.35rem 0 0.35rem;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
 .panel {
   background: var(--surface);
   border: 1px solid var(--border);

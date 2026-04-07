@@ -84,6 +84,7 @@ function setAccessToken(token, expiresInSec) {
 function clearAuth() {
   sessionStorage.removeItem(SS_TOKEN);
   sessionStorage.removeItem(SS_EXPIRES);
+  void refreshSpotifyUserDisplay();
 }
 
 function parseSpotifyInput(input) {
@@ -124,6 +125,37 @@ async function api(pathOrUrl, options = {}) {
     throw new Error(err.error?.message || `${res.status} ${res.statusText}`);
   }
   return res.json();
+}
+
+async function refreshSpotifyUserDisplay() {
+  const el = document.getElementById("user-display");
+  const authStatus = document.getElementById("auth-status");
+  if (!el) return;
+  if (!getAccessToken()) {
+    el.classList.add("hidden");
+    el.replaceChildren();
+    return;
+  }
+  try {
+    const me = await api("/me");
+    const name = me.display_name || me.id || "Spotify";
+    el.replaceChildren();
+    el.classList.remove("hidden");
+    el.appendChild(document.createTextNode("Signed in as "));
+    const strong = document.createElement("strong");
+    strong.textContent = name;
+    el.appendChild(strong);
+    if (authStatus && !authStatus.classList.contains("error")) {
+      authStatus.textContent = "";
+    }
+  } catch {
+    el.replaceChildren();
+    el.classList.remove("hidden");
+    el.appendChild(document.createTextNode("Signed in to Spotify."));
+    if (authStatus && !authStatus.classList.contains("error")) {
+      authStatus.textContent = "";
+    }
+  }
 }
 
 async function fetchAllPlaylistTracks(playlistId) {
@@ -605,7 +637,7 @@ function refreshProgressPicker() {
   const sel = document.getElementById("progress-pick");
   if (!sel) return;
   const autosave = localStorage.getItem(LS_PROGRESS_AUTOSAVE);
-  sel.innerHTML = '<option value="">— Choose a session —</option>';
+  sel.innerHTML = '<option value="">— Pick a session —</option>';
   if (autosave) {
     try {
       const snap = JSON.parse(autosave);
@@ -613,7 +645,7 @@ function refreshProgressPicker() {
       opt.value = "__autosave__";
       const n = snap.tracks?.length || "?";
       const t = snap.savedAt ? new Date(snap.savedAt).toLocaleString() : "";
-      opt.textContent = `Auto-saved · ${n} songs · ${t}`;
+      opt.textContent = `In progress · ${n} songs · ${t}`;
       sel.appendChild(opt);
     } catch (_) {}
   }
@@ -657,9 +689,9 @@ function saveProgressNow(statusEl) {
   try {
     localStorage.setItem(LS_PROGRESS_AUTOSAVE, JSON.stringify(snap));
     refreshProgressPicker();
-    if (el) el.textContent = "Saved to this browser.";
+    if (el) el.textContent = "Saved on this device.";
   } catch {
-    if (el) el.textContent = "Could not save (storage blocked).";
+    if (el) el.textContent = "Couldn’t save (storage blocked or full).";
   }
 }
 
@@ -668,19 +700,19 @@ function duplicateProgressAsNamed() {
   const status = document.getElementById("progress-status");
   if (!snap || !isValidProgressSnapshot(snap)) {
     if (status) {
-      status.textContent = "Choose auto-saved or a named checkpoint first.";
+      status.textContent = "Pick a session from the list first.";
       status.classList.add("error");
     }
     return;
   }
-  const name = prompt("Name for this checkpoint:");
+  const name = prompt("Name for this copy:");
   if (!name?.trim()) return;
   const list = getNamedProgressList();
   list.push({ id: newSaveId(), name: name.trim(), savedAt: Date.now(), snapshot: snap });
   setNamedProgressList(list);
   refreshProgressPicker();
   if (status) {
-    status.textContent = "Saved as a named checkpoint.";
+    status.textContent = "Copy saved.";
     status.classList.remove("error");
   }
 }
@@ -691,13 +723,13 @@ function deleteSelectedProgress() {
   const status = document.getElementById("progress-status");
   if (!id) {
     if (status) {
-      status.textContent = "Choose a session first.";
+      status.textContent = "Pick a session from the list first.";
       status.classList.add("error");
     }
     return;
   }
   if (id === "__autosave__") {
-    if (!confirm("Delete auto-saved progress?")) return;
+    if (!confirm("Delete your in-progress ranking from this device?")) return;
     clearProgressAutosave();
     if (status) {
       status.textContent = "Deleted.";
@@ -705,7 +737,7 @@ function deleteSelectedProgress() {
     }
     return;
   }
-  if (!confirm("Delete this named checkpoint?")) return;
+  if (!confirm("Delete this saved copy?")) return;
   const next = getNamedProgressList().filter((x) => x.id !== id);
   setNamedProgressList(next);
   refreshProgressPicker();
@@ -720,14 +752,14 @@ function exportProgressJsonFile() {
   const status = document.getElementById("progress-status");
   if (!snap) {
     if (status) {
-      status.textContent = "Select a session, or save while a ranking is open.";
+      status.textContent = "Pick a session from the list, or save while you’re ranking.";
       status.classList.add("error");
     }
     return;
   }
   downloadTextFile(`song-ranker-progress-${Date.now()}.json`, JSON.stringify(snap, null, 2), "application/json");
   if (status) {
-    status.textContent = "Downloaded JSON.";
+    status.textContent = "Download started.";
     status.classList.remove("error");
   }
 }
@@ -749,7 +781,7 @@ function importProgressFromFile(file) {
       setNamedProgressList(list);
       refreshProgressPicker();
       if (status) {
-        status.textContent = "Imported. Select it and tap Resume.";
+        status.textContent = "Uploaded. Pick it above and tap Continue.";
         status.classList.remove("error");
       }
     } catch (e) {
@@ -783,7 +815,7 @@ function exportRankingToJson() {
     tracks: ranked.map((t) => ({ ...t })),
   };
   downloadTextFile(`song-ranker-results-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
-  status.textContent = "Downloaded JSON.";
+  status.textContent = "Download started.";
 }
 
 function exportRankingToCsv() {
@@ -798,7 +830,7 @@ function exportRankingToCsv() {
     lines.push([i + 1, t.name, t.artists || "", t.album || "", t.url || ""].map(csvEscapeCell).join(","));
   });
   downloadTextFile(`song-ranker-results-${Date.now()}.csv`, lines.join("\n"), "text/csv;charset=utf-8");
-  status.textContent = "Downloaded CSV.";
+  status.textContent = "Download started.";
 }
 
 function setDeferButtonVisible(show) {
@@ -956,7 +988,7 @@ function saveCurrentRanking() {
   try {
     setSavedRankings(list);
     renderSavedRankingsList();
-    status.textContent = "Saved to this browser.";
+    status.textContent = "Saved on this device.";
     const sn = document.getElementById("save-name");
     if (sn) sn.value = "";
   } catch {
@@ -989,7 +1021,7 @@ function loadSavedById(id) {
 
 function deleteSavedById(id) {
   const status = document.getElementById("saved-rankings-status");
-  if (!confirm("Delete this saved ranking from this browser?")) return;
+  if (!confirm("Delete this ranking from this device?")) return;
   const next = getSavedRankings().filter((s) => s.id !== id);
   setSavedRankings(next);
   renderSavedRankingsList();
@@ -1147,9 +1179,9 @@ async function handleAuthReturn() {
     const data = await exchangeCodeForToken(code, verifier, clientId);
     setAccessToken(data.access_token, data.expires_in);
     sessionStorage.removeItem(SS_VERIFIER);
-    document.getElementById("auth-status").textContent = "Signed in.";
     document.getElementById("auth-status").classList.remove("error");
     document.getElementById("btn-load").disabled = false;
+    await refreshSpotifyUserDisplay();
   } catch (e) {
     document.getElementById("auth-status").textContent = e.message || String(e);
     document.getElementById("auth-status").classList.add("error");
@@ -1215,8 +1247,8 @@ function init() {
   document.getElementById("btn-login")?.addEventListener("click", startLogin);
 
   if (getAccessToken()) {
-    document.getElementById("auth-status").textContent = "Signed in.";
     document.getElementById("btn-load").disabled = false;
+    refreshSpotifyUserDisplay().catch(() => {});
   }
 
   handleAuthReturn().catch(() => {});
@@ -1303,7 +1335,7 @@ function init() {
     const loadSt = document.getElementById("load-status");
     if (!snap || !isValidProgressSnapshot(snap)) {
       if (st) {
-        st.textContent = "Choose a session from the list first.";
+        st.textContent = "Pick a session from the list first.";
         st.classList.add("error");
       }
       return;
