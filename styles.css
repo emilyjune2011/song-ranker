@@ -157,6 +157,13 @@ select.select-input {
   margin-top: 0.5rem;
 }
 
+.preset-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
 .btn {
   appearance: none;
   border: none;

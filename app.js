@@ -305,29 +305,35 @@ function dedupeById(tracks) {
   return [...map.values()];
 }
 
-function parseManualList(text) {
-  const lines = text.split(/\n/).map((l) => l.trim()).filter(Boolean);
-  const out = [];
-  for (const line of lines) {
-    let namePart = line;
-    let url = "";
-    const pipe = line.lastIndexOf("|");
-    if (pipe !== -1) {
-      namePart = line.slice(0, pipe).trim();
-      url = line.slice(pipe + 1).trim();
-    }
-    const m = url.match(/track\/([a-zA-Z0-9]+)/);
-    const id = m ? m[1] : `manual-${out.length}`;
-    const name = namePart || "Unknown";
-    out.push({
-      id,
-      name,
-      artists: "",
-      album: "",
-      url: url || "#",
-    });
+/**
+ * Curated presets (Spotify artist IDs). Add entries: { id, label }.
+ * @see https://open.spotify.com/artist/…
+ */
+const RANK_PRESETS = [{ id: "5K4W6rqBFWDnAN6FQUkS6x", label: "Kanye West" }];
+
+async function loadFromPreset(preset) {
+  const status = document.getElementById("load-status");
+  status.textContent = "";
+  status.classList.remove("error");
+  if (!getAccessToken()) {
+    status.textContent = "Sign in with Spotify first.";
+    status.classList.add("error");
+    return;
   }
-  return out;
+  status.textContent = "Loading…";
+  try {
+    const tracks = await fetchArtistTracks(preset.id);
+    if (tracks.length < 2) {
+      status.textContent = "Need at least two tracks to rank.";
+      status.classList.add("error");
+      return;
+    }
+    status.textContent = `Loaded ${tracks.length} tracks.`;
+    await runRanking(tracks, { sourceLabel: `Artist: ${preset.label}` });
+  } catch (e) {
+    status.textContent = e.message || String(e);
+    status.classList.add("error");
+  }
 }
 
 /** Guess a save label from track metadata (e.g. single artist or album). */
@@ -1425,20 +1431,17 @@ function init() {
     }
   });
 
-  document.getElementById("btn-manual")?.addEventListener("click", async () => {
-    const text = document.getElementById("manual-tracks").value;
-    const status = document.getElementById("load-status");
-    status.textContent = "";
-    status.classList.remove("error");
-    const tracks = parseManualList(text);
-    if (tracks.length < 2) {
-      status.textContent = "Add at least two lines with a Spotify track URL after |.";
-      status.classList.add("error");
-      return;
+  const presetWrap = document.getElementById("preset-buttons");
+  if (presetWrap) {
+    for (const p of RANK_PRESETS) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "btn secondary";
+      b.textContent = p.label;
+      b.addEventListener("click", () => loadFromPreset(p));
+      presetWrap.appendChild(b);
     }
-    status.textContent = `Using ${tracks.length} manual tracks.`;
-    await runRanking(tracks, { sourceLabel: guessLabelFromTracks(tracks) });
-  });
+  }
 
   document.getElementById("btn-save-ranking")?.addEventListener("click", saveCurrentRanking);
 

@@ -18,7 +18,7 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=18" />
+  <link rel="stylesheet" href="styles.css?v=19" />
 </head>
 <body>
   <div class="app">
@@ -68,12 +68,9 @@
       </div>
       <p id="load-status" class="status"></p>
 
-      <h2>Or add tracks by hand</h2>
-      <p class="hint">One line per song: <code>Artist – Title | https://open.spotify.com/track/…</code></p>
-      <textarea id="manual-tracks" rows="6" placeholder="Taylor Swift – Anti-Hero | https://open.spotify.com/track/…"></textarea>
-      <div class="actions">
-        <button type="button" id="btn-manual" class="btn secondary">Use manual list</button>
-      </div>
+      <h2>Quick picks</h2>
+      <p class="hint">Load a preset artist catalog in one tap (same as using an artist link above).</p>
+      <div id="preset-buttons" class="preset-buttons"></div>
 
       <h2>Your lists & backups</h2>
       <p class="hint">
@@ -194,7 +191,7 @@
       <p id="copy-status" class="status"></p>
     </section>
   </div>
-  <script src="config.js?v=18"></script>
-  <script src="app.js?v=18" defer></script>
+  <script src="config.js?v=19"></script>
+  <script src="app.js?v=19" defer></script>
 </body>
 </html>
