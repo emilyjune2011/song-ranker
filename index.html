@@ -1,6 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <script>
+    (function () {
+      var path = location.pathname;
+      if (path === "/" || path === "") return;
+      if (path.endsWith("/")) return;
+      var last = path.split("/").pop() || "";
+      if (last.indexOf(".") !== -1) return;
+      location.replace(path + "/" + location.search + location.hash);
+    })();
+  </script>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
