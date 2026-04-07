@@ -154,15 +154,6 @@ textarea {
   border-color: var(--muted);
 }
 
-.btn.link {
-  text-decoration: none;
-  display: inline-block;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  color: var(--accent);
-  font-weight: 500;
-}
-
 .status {
   min-height: 1.25em;
   margin: 0.5rem 0 0;
@@ -291,13 +282,6 @@ textarea {
 
 .link-label {
   color: var(--accent);
-}
-
-.inline-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  margin-top: 0.75rem;
 }
 
 .ranked-list {

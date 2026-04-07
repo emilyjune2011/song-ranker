@@ -359,12 +359,15 @@ function renderPair(a, b) {
   document.getElementById("meta-a").textContent = [a.artists, a.album].filter(Boolean).join(" · ");
   document.getElementById("title-b").textContent = b.name;
   document.getElementById("meta-b").textContent = [b.artists, b.album].filter(Boolean).join(" · ");
-  const la = document.getElementById("link-a");
-  const lb = document.getElementById("link-b");
-  la.href = a.url;
-  lb.href = b.url;
   setTrackEmbed("embed-a", "embed-wrap-a", a);
   setTrackEmbed("embed-b", "embed-wrap-b", b);
+}
+
+function shuffleInPlace(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
 }
 
 function compareTracks(a, b) {
@@ -397,13 +400,15 @@ function wireCompareCards() {
 
 async function runRanking(tracks) {
   if (tracks.length === 0) return;
+  const order = [...tracks];
+  shuffleInPlace(order);
   compareStep = 0;
-  compareEstimate = estimateMergeComparisons(tracks.length);
+  compareEstimate = estimateMergeComparisons(order.length);
   updateProgress();
   showComparePanel(true);
   showResultsPanel(false);
 
-  const ranked = await mergeSortByCompare(tracks, async (a, b) => {
+  const ranked = await mergeSortByCompare(order, async (a, b) => {
     if (a.id === b.id) return 0;
     return compareTracks(a, b);
   });
