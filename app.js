@@ -120,15 +120,22 @@ async function api(pathOrUrl, options = {}) {
 
 async function fetchAllPlaylistTracks(playlistId) {
   const out = [];
-  let url = `/playlists/${encodeURIComponent(playlistId)}/tracks?limit=100`;
-  while (url) {
-    const data = await api(url);
-    for (const item of data.items || []) {
+  const pageLimit = 50;
+  let offset = 0;
+  for (;;) {
+    const data = await api(
+      `/playlists/${encodeURIComponent(playlistId)}/tracks?limit=${pageLimit}&offset=${offset}`
+    );
+    const items = data.items || [];
+    for (const item of items) {
       const t = item.track;
       if (!t || !t.id) continue;
       out.push(normalizeTrack(t));
     }
-    url = data.next || null;
+    if (!items.length) break;
+    offset += items.length;
+    if (data.total != null && offset >= data.total) break;
+    if (items.length < pageLimit) break;
   }
   return dedupeById(out);
 }
@@ -138,9 +145,12 @@ async function fetchAlbumTracks(albumId) {
   const albumName = meta.name || "";
   const artistsMain = (meta.artists || []).map((a) => a.name).join(", ");
   const out = [];
-  let url = `/albums/${encodeURIComponent(albumId)}/tracks?limit=50`;
-  while (url) {
-    const data = await api(url);
+  const pageLimit = 50;
+  let offset = 0;
+  for (;;) {
+    const data = await api(
+      `/albums/${encodeURIComponent(albumId)}/tracks?limit=${pageLimit}&offset=${offset}`
+    );
     for (const t of data.items || []) {
       const artists = (t.artists || []).map((a) => a.name).join(", ") || artistsMain;
       out.push({
@@ -151,7 +161,11 @@ async function fetchAlbumTracks(albumId) {
         url: t.external_urls?.spotify || spotifyTrackUrl(t.id),
       });
     }
-    url = data.next || null;
+    const items = data.items || [];
+    if (!items.length) break;
+    offset += items.length;
+    if (data.total != null && offset >= data.total) break;
+    if (items.length < pageLimit) break;
   }
   return dedupeById(out);
 }
@@ -159,22 +173,33 @@ async function fetchAlbumTracks(albumId) {
 async function fetchArtistTracks(artistId) {
   const albumNames = new Map();
   const albums = new Set();
-  let url = `/artists/${encodeURIComponent(artistId)}/albums?include_groups=album,single&limit=10`;
-  while (url) {
-    const data = await api(url);
-    for (const a of data.items || []) {
+  const albumPageLimit = 10;
+  let albumOffset = 0;
+  for (;;) {
+    const data = await api(
+      `/artists/${encodeURIComponent(artistId)}/albums?include_groups=album,single&limit=${albumPageLimit}&offset=${albumOffset}`
+    );
+    const items = data.items || [];
+    for (const a of items) {
       albums.add(a.id);
       albumNames.set(a.id, a.name);
     }
-    url = data.next || null;
+    if (!items.length) break;
+    albumOffset += items.length;
+    if (data.total != null && albumOffset >= data.total) break;
+    if (items.length < albumPageLimit) break;
   }
 
   const out = [];
+  const trackPageLimit = 50;
   for (const albumId of albums) {
-    let tUrl = `/albums/${encodeURIComponent(albumId)}/tracks?limit=50`;
-    while (tUrl) {
-      const data = await api(tUrl);
-      for (const t of data.items || []) {
+    let trackOffset = 0;
+    for (;;) {
+      const data = await api(
+        `/albums/${encodeURIComponent(albumId)}/tracks?limit=${trackPageLimit}&offset=${trackOffset}`
+      );
+      const items = data.items || [];
+      for (const t of items) {
         const belongs = (t.artists || []).some((a) => a.id === artistId);
         if (!belongs) continue;
         const artists = (t.artists || []).map((a) => a.name).join(", ");
@@ -186,7 +211,10 @@ async function fetchArtistTracks(artistId) {
           url: t.external_urls?.spotify || spotifyTrackUrl(t.id),
         });
       }
-      tUrl = data.next || null;
+      if (!items.length) break;
+      trackOffset += items.length;
+      if (data.total != null && trackOffset >= data.total) break;
+      if (items.length < trackPageLimit) break;
     }
   }
   return dedupeById(out);
