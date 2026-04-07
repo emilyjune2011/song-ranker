@@ -18,7 +18,7 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=17" />
+  <link rel="stylesheet" href="styles.css?v=18" />
 </head>
 <body>
   <div class="app">
@@ -115,6 +115,9 @@
     </section>
 
     <section id="panel-compare" class="panel hidden">
+      <div class="panel-nav">
+        <button type="button" id="btn-back-home-compare" class="btn secondary">← Home</button>
+      </div>
       <div class="progress-wrap">
         <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
         <p id="progress-text" class="progress-text"></p>
@@ -171,11 +174,14 @@
     </section>
 
     <section id="panel-results" class="panel hidden">
+      <div class="panel-nav">
+        <button type="button" id="btn-back-home-results" class="btn secondary">← Home</button>
+      </div>
       <h2>Your ranking</h2>
       <ol id="ranked-list" class="ranked-list"></ol>
       <div class="row">
-        <label for="save-name">Name (optional)</label>
-        <input id="save-name" type="text" autocomplete="off" placeholder="e.g. My top tracks — April 2026" />
+        <label for="save-name">Name when saving (you can edit)</label>
+        <input id="save-name" type="text" autocomplete="off" placeholder="Filled in from playlist, artist, or album when possible" />
       </div>
       <div class="actions">
         <button type="button" id="btn-save-ranking" class="btn secondary">Keep this list</button>
@@ -188,7 +194,7 @@
       <p id="copy-status" class="status"></p>
     </section>
   </div>
-  <script src="config.js?v=17"></script>
-  <script src="app.js?v=17" defer></script>
+  <script src="config.js?v=18"></script>
+  <script src="app.js?v=18" defer></script>
 </body>
 </html>

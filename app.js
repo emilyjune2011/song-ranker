@@ -127,6 +127,28 @@ async function api(pathOrUrl, options = {}) {
   return res.json();
 }
 
+/** Human-readable label for default save names (playlist / artist / album title). */
+async function fetchSpotifySourceLabel(parsed) {
+  if (!parsed?.id || !parsed?.type) return null;
+  try {
+    if (parsed.type === "playlist") {
+      const d = await api(`/playlists/${encodeURIComponent(parsed.id)}`);
+      return `Playlist: ${d.name || "Playlist"}`;
+    }
+    if (parsed.type === "artist") {
+      const d = await api(`/artists/${encodeURIComponent(parsed.id)}`);
+      return `Artist: ${d.name || "Artist"}`;
+    }
+    if (parsed.type === "album") {
+      const d = await api(`/albums/${encodeURIComponent(parsed.id)}`);
+      return `Album: ${d.name || "Album"}`;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 async function refreshSpotifyUserDisplay() {
   const el = document.getElementById("user-display");
   const authStatus = document.getElementById("auth-status");
@@ -308,6 +330,24 @@ function parseManualList(text) {
   return out;
 }
 
+/** Guess a save label from track metadata (e.g. single artist or album). */
+function guessLabelFromTracks(tracks) {
+  if (!tracks?.length) return null;
+  const artistNames = new Set();
+  for (const t of tracks) {
+    if (t.artists) {
+      for (const part of t.artists.split(",")) {
+        const s = part.trim();
+        if (s) artistNames.add(s);
+      }
+    }
+  }
+  if (artistNames.size === 1) return `Artist: ${[...artistNames][0]}`;
+  const albums = [...new Set(tracks.map((t) => t.album).filter(Boolean))];
+  if (albums.length === 1) return `Album: ${albums[0]}`;
+  return `Manual list (${tracks.length} songs)`;
+}
+
 /** --- UI state --- */
 
 let compareStep = 0;
@@ -391,6 +431,7 @@ function shuffleInPlace(arr) {
 
 /** Directed edges: winnerId → loserId means “winner preferred over loser”. Used to skip redundant merge questions. */
 const CMP_UNDO = Symbol("cmpUndo");
+const CMP_ABORT = Symbol("cmpAbort");
 
 let preferenceAdj = null;
 /** Stack of recorded preferences (not skips); each entry has track refs to re-ask that pair on undo. */
@@ -399,6 +440,10 @@ let choiceHistory = [];
 let undoForcedPair = null;
 /** Skip counts per pair (pairKey → times deferred); must persist for resume. */
 let rankingDeferredCounts = new Map();
+/** User chose Home while ranking; checked each comparison turn. */
+let rankingAbortRequested = false;
+/** Playlist / artist / album (or guessed) label for default save names. */
+let rankingSourceLabel = null;
 
 function resetPreferenceGraph() {
   preferenceAdj = new Map();
@@ -567,6 +612,7 @@ function buildProgressSnapshot() {
     pendingPair: getPendingPairIds(),
     compareStep,
     compareEstimate,
+    sourceLabel: rankingSourceLabel || null,
   };
 }
 
@@ -582,6 +628,7 @@ function applyResumeSnapshot(snap, order) {
   }
   compareStep = snap.compareStep ?? 0;
   compareEstimate = snap.compareEstimate ?? estimateMergeComparisons(order.length);
+  rankingSourceLabel = snap.sourceLabel || guessLabelFromTracks(order);
 }
 
 function isValidProgressSnapshot(o) {
@@ -840,6 +887,10 @@ function setDeferButtonVisible(show) {
 
 async function rankWithPartialOrder(tracks) {
   for (;;) {
+    if (rankingAbortRequested) {
+      rankingAbortRequested = false;
+      throw Object.assign(new Error("Left ranking"), { code: "ABORT" });
+    }
     let a;
     let b;
     let canDefer;
@@ -858,6 +909,9 @@ async function rankWithPartialOrder(tracks) {
     }
     const key = pairKey(a, b);
     const cmp = await compareTracks(a, b, canDefer);
+    if (cmp === CMP_ABORT) {
+      throw Object.assign(new Error("Left ranking"), { code: "ABORT" });
+    }
     if (cmp === CMP_UNDO) {
       continue;
     }
@@ -969,6 +1023,18 @@ function renderRankedList(ranked) {
   });
 }
 
+function applySaveNameSuggestion() {
+  const inp = document.getElementById("save-name");
+  if (!inp) return;
+  const dateStr = new Date().toLocaleDateString(undefined, { dateStyle: "medium" });
+  if (rankingSourceLabel) {
+    inp.value = `${rankingSourceLabel} — ${dateStr}`;
+  } else {
+    inp.value = "";
+    inp.placeholder = `Ranking — ${dateStr}`;
+  }
+}
+
 function saveCurrentRanking() {
   const ranked = window.__lastRanked;
   const status = document.getElementById("copy-status");
@@ -977,14 +1043,19 @@ function saveCurrentRanking() {
     return;
   }
   let name = (document.getElementById("save-name")?.value || "").trim();
-  if (!name) name = `Ranking ${new Date().toLocaleString()}`;
+  const dateStr = new Date().toLocaleDateString(undefined, { dateStyle: "medium" });
+  if (!name) {
+    name = rankingSourceLabel ? `${rankingSourceLabel} — ${dateStr}` : `Ranking ${new Date().toLocaleString()}`;
+  }
   const list = getSavedRankings();
-  list.push({
+  const entry = {
     id: newSaveId(),
     name,
     savedAt: Date.now(),
     tracks: ranked.map((t) => ({ ...t })),
-  });
+  };
+  if (rankingSourceLabel) entry.sourceLabel = rankingSourceLabel;
+  list.push(entry);
   try {
     setSavedRankings(list);
     renderSavedRankingsList();
@@ -1008,7 +1079,9 @@ function loadSavedById(id) {
   }
   const ranked = found.tracks.map((t) => ({ ...t }));
   window.__lastRanked = ranked;
+  rankingSourceLabel = found.sourceLabel || guessLabelFromTracks(found.tracks);
   renderRankedList(ranked);
+  applySaveNameSuggestion();
   showComparePanel(false);
   showResultsPanel(true);
   document.getElementById("panel-setup")?.classList.add("hidden");
@@ -1041,7 +1114,7 @@ function compareTracks(a, b, canDefer = true) {
   pendingPairForSave = [a.id, b.id];
   return new Promise((resolve) => {
     pendingResolve = (value) => {
-      if (value !== 0 && value !== CMP_UNDO) compareStep += 1;
+      if (value !== 0 && value !== CMP_UNDO && value !== CMP_ABORT) compareStep += 1;
       updateProgress();
       resolve(value);
     };
@@ -1095,6 +1168,7 @@ async function runRanking(tracks, options = {}) {
   if (!resume && (!tracks || tracks.length === 0)) return;
   if (resume && (!resume.tracks || resume.tracks.length < 2)) return;
 
+  rankingAbortRequested = false;
   let order;
   if (resume) {
     order = resume.tracks.map((t) => ({ ...t }));
@@ -1107,6 +1181,9 @@ async function runRanking(tracks, options = {}) {
     compareStep = 0;
     compareEstimate = estimateMergeComparisons(order.length);
     currentRankingOrder = order;
+    const sl = options.sourceLabel;
+    rankingSourceLabel =
+      sl != null && String(sl).trim() !== "" ? String(sl).trim() : guessLabelFromTracks(order);
   }
 
   updateProgress();
@@ -1119,8 +1196,20 @@ async function runRanking(tracks, options = {}) {
     showResultsPanel(true);
     window.__lastRanked = ranked;
     renderRankedList(ranked);
+    applySaveNameSuggestion();
     clearProgressAutosave();
   } catch (e) {
+    if (e && e.code === "ABORT") {
+      showComparePanel(false);
+      showResultsPanel(false);
+      document.getElementById("panel-setup")?.classList.remove("hidden");
+      const st = document.getElementById("load-status");
+      if (st) {
+        st.textContent = "";
+        st.classList.remove("error");
+      }
+      return;
+    }
     showComparePanel(false);
     showResultsPanel(false);
     document.getElementById("panel-setup")?.classList.remove("hidden");
@@ -1130,8 +1219,44 @@ async function runRanking(tracks, options = {}) {
       st.classList.add("error");
     }
   } finally {
+    rankingAbortRequested = false;
     currentRankingOrder = null;
     pendingPairForSave = null;
+  }
+}
+
+function backToLanding() {
+  const resultsPanel = document.getElementById("panel-results");
+  const comparePanel = document.getElementById("panel-compare");
+  const resultsVisible = resultsPanel && !resultsPanel.classList.contains("hidden");
+  const compareVisible = comparePanel && !comparePanel.classList.contains("hidden");
+
+  if (compareVisible) {
+    if (pendingResolve) {
+      if (
+        !confirm(
+          "Leave this ranking? Your place is saved—you can tap Continue on the home screen to pick it up again."
+        )
+      ) {
+        return;
+      }
+      const r = pendingResolve;
+      pendingResolve = null;
+      r(CMP_ABORT);
+      return;
+    }
+    rankingAbortRequested = true;
+    return;
+  }
+  if (resultsVisible) {
+    rankingSourceLabel = null;
+    window.__lastRanked = null;
+    showComparePanel(false);
+    showResultsPanel(false);
+    document.getElementById("panel-setup")?.classList.remove("hidden");
+    document.getElementById("copy-status").textContent = "";
+    const sn = document.getElementById("save-name");
+    if (sn) sn.value = "";
   }
 }
 
@@ -1292,7 +1417,8 @@ function init() {
         return;
       }
       status.textContent = `Loaded ${tracks.length} tracks.`;
-      await runRanking(tracks);
+      const label = await fetchSpotifySourceLabel(parsed);
+      await runRanking(tracks, { sourceLabel: label });
     } catch (e) {
       status.textContent = e.message || String(e);
       status.classList.add("error");
@@ -1311,7 +1437,7 @@ function init() {
       return;
     }
     status.textContent = `Using ${tracks.length} manual tracks.`;
-    await runRanking(tracks);
+    await runRanking(tracks, { sourceLabel: guessLabelFromTracks(tracks) });
   });
 
   document.getElementById("btn-save-ranking")?.addEventListener("click", saveCurrentRanking);
@@ -1391,11 +1517,23 @@ function init() {
   document.getElementById("btn-restart")?.addEventListener("click", () => {
     const ranked = window.__lastRanked;
     if (!ranked?.length) return;
-    runRanking([...ranked]).catch(() => {});
+    runRanking([...ranked], {
+      sourceLabel: rankingSourceLabel || guessLabelFromTracks(ranked),
+    }).catch(() => {});
+  });
+
+  document.getElementById("btn-back-home-compare")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    backToLanding();
+  });
+  document.getElementById("btn-back-home-results")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    backToLanding();
   });
 
   document.getElementById("btn-new")?.addEventListener("click", () => {
     window.__lastRanked = null;
+    rankingSourceLabel = null;
     showComparePanel(false);
     showResultsPanel(false);
     document.getElementById("panel-setup")?.classList.remove("hidden");

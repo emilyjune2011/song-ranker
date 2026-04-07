@@ -67,6 +67,15 @@ body {
   margin-bottom: 1rem;
 }
 
+.panel-nav {
+  margin: -0.25rem 0 0.75rem;
+}
+
+.panel-nav .btn {
+  font-size: 0.88rem;
+  padding: 0.45rem 0.9rem;
+}
+
 .panel h2 {
   margin: 1.25rem 0 0.5rem;
   font-size: 1.05rem;
