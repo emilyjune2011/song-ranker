@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" class="theme-dark">
+<html lang="en" dir="ltr" class="theme-dark">
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Cache-Control" content="no-cache" />
@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=26" />
+  <link rel="stylesheet" href="styles.css?v=27" />
 </head>
 <body>
   <div class="app">
@@ -32,12 +32,14 @@
           <p class="tagline">Pairwise sort for Spotify playlists & albums — pick favorites, get a clean list.</p>
         </div>
         <div class="header-tools">
-          <label class="visually-hidden" for="theme-select">Theme</label>
-          <select id="theme-select" class="select-input select-toolbar" aria-label="Color theme">
-            <option value="dark">Dark</option>
-            <option value="light">Light</option>
-            <option value="auto">System</option>
-          </select>
+          <div class="header-theme" role="group" aria-label="Color theme">
+            <span class="header-theme-label" id="theme-select-label">Theme</span>
+            <select id="theme-select" class="select-input select-compact" aria-labelledby="theme-select-label">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="auto">System</option>
+            </select>
+          </div>
         </div>
       </div>
     </header>
@@ -50,8 +52,8 @@
       </p>
       <div id="client-setup-block">
         <p class="hint">Local: paste Client ID or use <code>config.js</code>.</p>
-        <div class="row row-tight">
-          <label for="client-id">Client ID</label>
+        <div class="field field-tight">
+          <label class="field-label" for="client-id">Client ID</label>
           <input id="client-id" type="text" autocomplete="off" placeholder="Optional if set in config.js" />
         </div>
         <div class="actions actions-tight">
@@ -68,19 +70,21 @@
       <p class="hint">Paste a playlist, artist, or album link — or use a preset.</p>
 
       <div class="options-grid">
-        <div class="row row-tight">
-          <label for="ranking-mode">Ranking goal</label>
+        <div class="field field-tight">
+          <label class="field-label" for="ranking-mode">Ranking goal</label>
+          <p class="field-hint">Full list or stop after a top band (fewer picks).</p>
           <select id="ranking-mode" class="select-input">
-            <option value="full">Complete ranking (all songs)</option>
-            <option value="25">Top 25 only (fewer comparisons)</option>
-            <option value="100">Top 100 only (fewer comparisons)</option>
+            <option value="full">Complete ranking</option>
+            <option value="25">Top 25</option>
+            <option value="100">Top 100</option>
           </select>
         </div>
-        <div class="row row-tight">
-          <label for="compare-experience">Experience</label>
+        <div class="field field-tight">
+          <label class="field-label" for="compare-experience">How to compare</label>
+          <p class="field-hint">Standard shows names &amp; embeds. Blind uses 30s previews only.</p>
           <select id="compare-experience" class="select-input">
-            <option value="standard">Standard — see song names &amp; Spotify previews</option>
-            <option value="blind">Blind test — 30s audio only, names hidden until results</option>
+            <option value="standard">Standard</option>
+            <option value="blind">Blind (audio only)</option>
           </select>
         </div>
       </div>
@@ -89,8 +93,8 @@
       </p>
 
       <div id="preset-buttons" class="preset-buttons"></div>
-      <div class="row row-tight">
-        <label for="spotify-url">Spotify URL</label>
+      <div class="field field-tight">
+        <label class="field-label" for="spotify-url">Spotify URL</label>
         <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/…" />
       </div>
       <div class="actions actions-tight">
@@ -104,10 +108,10 @@
       <details class="panel-details">
         <summary>In progress</summary>
         <div class="details-body">
-          <div class="row row-tight">
-            <label for="progress-pick">Session</label>
+          <div class="field field-tight">
+            <label class="field-label" for="progress-pick">Session</label>
             <select id="progress-pick" class="select-input">
-              <option value="">— Pick —</option>
+              <option value="">Choose a session…</option>
             </select>
           </div>
           <div class="actions actions-tight">
@@ -227,8 +231,8 @@
         <p id="share-status" class="status status-tight" role="status"></p>
       </div>
 
-      <div class="row row-tight">
-        <label for="save-name">Save as</label>
+      <div class="field field-tight">
+        <label class="field-label" for="save-name">Save as</label>
         <input id="save-name" type="text" autocomplete="off" placeholder="Prefilled from source" />
       </div>
       <div class="actions actions-tight">
@@ -242,7 +246,7 @@
       <p id="copy-status" class="status status-tight"></p>
     </section>
   </div>
-  <script src="config.js?v=26"></script>
-  <script src="app.js?v=26" defer></script>
+  <script src="config.js?v=27"></script>
+  <script src="app.js?v=27" defer></script>
 </body>
 </html>

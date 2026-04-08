@@ -847,7 +847,7 @@ function refreshProgressPicker() {
   const sel = document.getElementById("progress-pick");
   if (!sel) return;
   const autosave = localStorage.getItem(LS_PROGRESS_AUTOSAVE);
-  sel.innerHTML = '<option value="">— Pick —</option>';
+  sel.innerHTML = '<option value="">Choose a session…</option>';
   if (autosave) {
     try {
       const snap = JSON.parse(autosave);
