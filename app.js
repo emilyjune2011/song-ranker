@@ -544,7 +544,8 @@ async function fetchAlbumTracks(albumId) {
 async function fetchArtistTracks(artistId) {
   const albumNames = new Map();
   const albums = new Set();
-  const albumPageLimit = 50;
+  /** Spotify Web API: Get Artist's Albums — limit max 10 (not 50). */
+  const albumPageLimit = 10;
   let albumOffset = 0;
   for (;;) {
     const data = await api(
