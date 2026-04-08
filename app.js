@@ -13,6 +13,9 @@ const LS_SAVED_RANKINGS = "song_ranker_saved_rankings";
 const LS_PROGRESS_AUTOSAVE = "song_ranker_progress_autosave";
 const LS_PROGRESS_NAMED = "song_ranker_progress_named";
 const LS_THEME = "song_ranker_theme";
+/** localStorage key prefix: `{prefix}{spotifyArtistId}` → JSON { v, savedAt, tracks } */
+const LS_PRESET_CACHE_PREFIX = "song_ranker_preset_cache_v1:";
+const PRESET_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const SS_VERIFIER = "song_ranker_pkce_verifier";
 const SS_TOKEN = "song_ranker_access_token";
 const SS_EXPIRES = "song_ranker_token_expires_at";
@@ -186,18 +189,20 @@ async function api(pathOrUrl, options = {}) {
     if (res.status === 429) {
       await res.text().catch(() => {});
       const raw = res.headers.get("Retry-After");
-      let sec = 5;
+      let sec;
       if (raw != null && raw !== "") {
         const n = parseFloat(raw);
-        if (!Number.isNaN(n)) sec = Math.min(120, Math.max(1, n));
+        if (!Number.isNaN(n)) sec = Math.min(600, Math.max(1, n));
       } else {
-        sec = 5 + Math.floor(Math.random() * 4);
+        sec = Math.min(120, 6 + attempt * 10 + Math.floor(Math.random() * 6));
       }
       if (attempt < maxAttempts - 1) {
-        await sleep(sec * 1000 + Math.floor(Math.random() * 500));
+        await sleep(sec * 1000 + Math.floor(Math.random() * 800));
         continue;
       }
-      throw new Error(`Rate limited. Try again in ${raw || "a minute"} or load a smaller playlist.`);
+      throw new Error(
+        `Spotify rate limited this app (shared quota for all users). Wait a few minutes and try again, or use Standard comparison to skip extra API calls. Extended Quota can be requested in the Spotify Developer Dashboard.`
+      );
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -303,18 +308,19 @@ async function fetchAllPlaylistTracks(playlistId) {
   return dedupeById(out);
 }
 
+/**
+ * Load album tracks. Uses GET /albums/{id} first — the response embeds track paging,
+ * so we avoid a duplicate GET /albums/{id}/tracks for the first page (fewer API calls).
+ * Returns sourceLabel so callers need not fetch album metadata again for save names.
+ */
 async function fetchAlbumTracks(albumId) {
   const meta = await api(`/albums/${encodeURIComponent(albumId)}`);
   const albumName = meta.name || "";
   const artistsMain = (meta.artists || []).map((a) => a.name).join(", ");
   const out = [];
-  const pageLimit = 50;
-  let offset = 0;
-  for (;;) {
-    const data = await api(
-      `/albums/${encodeURIComponent(albumId)}/tracks?limit=${pageLimit}&offset=${offset}`
-    );
-    for (const t of data.items || []) {
+
+  function pushPageItems(items) {
+    for (const t of items || []) {
       const artists = (t.artists || []).map((a) => a.name).join(", ") || artistsMain;
       out.push({
         id: t.id,
@@ -324,14 +330,39 @@ async function fetchAlbumTracks(albumId) {
         url: t.external_urls?.spotify || spotifyTrackUrl(t.id),
       });
     }
-    const items = data.items || [];
-    if (!items.length) break;
-    offset += items.length;
-    if (data.total != null && offset >= data.total) break;
-    if (items.length < pageLimit) break;
-    await sleep(160);
   }
-  return dedupeById(out);
+
+  const paging = meta.tracks;
+  if (paging) {
+    pushPageItems(paging.items);
+    let next = paging.next;
+    while (next) {
+      await sleep(160);
+      const data = await api(next);
+      pushPageItems(data.items);
+      next = data.next;
+    }
+  } else {
+    const pageLimit = 50;
+    let offset = 0;
+    for (;;) {
+      const data = await api(
+        `/albums/${encodeURIComponent(albumId)}/tracks?limit=${pageLimit}&offset=${offset}`
+      );
+      pushPageItems(data.items);
+      const items = data.items || [];
+      if (!items.length) break;
+      offset += items.length;
+      if (data.total != null && offset >= data.total) break;
+      if (items.length < pageLimit) break;
+      await sleep(160);
+    }
+  }
+
+  return {
+    tracks: dedupeById(out),
+    sourceLabel: albumName ? `Album: ${albumName}` : null,
+  };
 }
 
 async function fetchArtistTracks(artistId) {
@@ -424,7 +455,7 @@ async function enrichTracksWithPreviews(tracks) {
   const unique = [...new Set(ids)];
   const chunk = 50;
   for (let i = 0; i < unique.length; i += chunk) {
-    if (i > 0) await sleep(220);
+    if (i > 0) await sleep(380);
     const slice = unique.slice(i, i + chunk);
     const data = await api(`/tracks?ids=${slice.map(encodeURIComponent).join(",")}`);
     const byId = new Map((data.tracks || []).filter(Boolean).map((tr) => [tr.id, tr]));
@@ -441,20 +472,61 @@ async function enrichTracksWithPreviews(tracks) {
  */
 const RANK_PRESETS = [{ id: "5K4W6rqBFWDnAN6FQUkS6x", label: "Kanye West" }];
 
+function getPresetTracksCache(artistId) {
+  try {
+    const raw = localStorage.getItem(LS_PRESET_CACHE_PREFIX + artistId);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || data.v !== 1 || !Array.isArray(data.tracks)) return null;
+    if (typeof data.savedAt !== "number" || Date.now() - data.savedAt > PRESET_CACHE_MAX_AGE_MS) {
+      localStorage.removeItem(LS_PRESET_CACHE_PREFIX + artistId);
+      return null;
+    }
+    return dedupeById(JSON.parse(JSON.stringify(data.tracks)));
+  } catch {
+    return null;
+  }
+}
+
+function setPresetTracksCache(artistId, tracks) {
+  try {
+    localStorage.setItem(
+      LS_PRESET_CACHE_PREFIX + artistId,
+      JSON.stringify({
+        v: 1,
+        savedAt: Date.now(),
+        tracks: JSON.parse(JSON.stringify(tracks)),
+      })
+    );
+  } catch {
+    /* quota or private mode */
+  }
+}
+
 async function startRankingFromPreset(preset) {
   const status = document.getElementById("load-status");
   status.textContent = "Loading…";
   try {
-    const tracks = await fetchArtistTracks(preset.id);
+    let tracks = getPresetTracksCache(preset.id);
+    const fromCache = tracks != null;
+    if (!tracks) {
+      tracks = await fetchArtistTracks(preset.id);
+    }
     if (tracks.length < 2) {
       status.textContent = "Need at least two tracks to rank.";
       status.classList.add("error");
       return;
     }
-    status.textContent = "Loading previews…";
-    await enrichTracksWithPreviews(tracks);
-    status.textContent = `Loaded ${tracks.length} tracks.`;
-    await runRanking(tracks, { sourceLabel: `Artist: ${preset.label}` });
+    if (!fromCache) {
+      setPresetTracksCache(preset.id, tracks);
+    }
+    status.textContent = fromCache
+      ? `Loaded ${tracks.length} tracks (saved on this device).`
+      : `Loaded ${tracks.length} tracks.`;
+    await runRanking(tracks, {
+      sourceLabel: `Artist: ${preset.label}`,
+      presetCacheArtistId: preset.id,
+    });
   } catch (e) {
     status.textContent = e.message || String(e);
     status.classList.add("error");
@@ -1342,12 +1414,61 @@ function renderSavedRankingsList() {
 
 let supabaseClient = null;
 
+function collectPresetCachesForSync() {
+  const out = {};
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k || !k.startsWith(LS_PRESET_CACHE_PREFIX)) continue;
+      const artistId = k.slice(LS_PRESET_CACHE_PREFIX.length);
+      const raw = localStorage.getItem(k);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.v === 1 && Array.isArray(parsed.tracks)) {
+          out[artistId] = parsed;
+        }
+      } catch {
+        /* skip bad entry */
+      }
+    }
+  } catch {
+    /* private mode */
+  }
+  return out;
+}
+
+/** Merge remote preset caches into localStorage (newer savedAt wins per artist). */
+function mergePresetCachesFromCloud(presetCaches) {
+  if (!presetCaches || typeof presetCaches !== "object") return;
+  for (const [artistId, entry] of Object.entries(presetCaches)) {
+    if (!entry || entry.v !== 1 || !Array.isArray(entry.tracks)) continue;
+    const localKey = LS_PRESET_CACHE_PREFIX + artistId;
+    let localSavedAt = 0;
+    try {
+      const prev = localStorage.getItem(localKey);
+      if (prev) localSavedAt = JSON.parse(prev).savedAt || 0;
+    } catch {
+      localSavedAt = 0;
+    }
+    const remoteSavedAt = typeof entry.savedAt === "number" ? entry.savedAt : 0;
+    if (remoteSavedAt >= localSavedAt) {
+      try {
+        localStorage.setItem(localKey, JSON.stringify(entry));
+      } catch {
+        /* quota */
+      }
+    }
+  }
+}
+
 function getLocalSyncPayload() {
   return {
     v: 1,
     savedRankings: JSON.parse(localStorage.getItem(LS_SAVED_RANKINGS) || "[]"),
     namedProgress: JSON.parse(localStorage.getItem(LS_PROGRESS_NAMED) || "[]"),
     autosave: localStorage.getItem(LS_PROGRESS_AUTOSAVE),
+    presetCaches: collectPresetCachesForSync(),
   };
 }
 
@@ -1360,6 +1481,7 @@ function applyCloudPayload(obj) {
   } else {
     localStorage.removeItem(LS_PROGRESS_AUTOSAVE);
   }
+  mergePresetCachesFromCloud(obj.presetCaches);
   renderSavedRankingsList();
   refreshProgressPicker();
 }
@@ -1418,7 +1540,9 @@ async function initCloudSync() {
         return;
       }
     }
-    setStatus("Your saves can be stored online so you can get them back on another device.");
+    setStatus(
+      "Your saves and Quick start caches can be stored online so you can get them back on another device."
+    );
   } catch (e) {
     setStatus("Online backup isn’t available right now. Try again later.", true);
     console.warn(e);
@@ -1701,6 +1825,23 @@ async function runRanking(tracks, options = {}) {
     const sl = options.sourceLabel;
     rankingSourceLabel =
       sl != null && String(sl).trim() !== "" ? String(sl).trim() : guessLabelFromTracks(order);
+  }
+
+  if (!resume && currentBlindMode && getAccessToken()) {
+    const loadSt = document.getElementById("load-status");
+    if (loadSt) {
+      loadSt.textContent = "Loading previews…";
+      loadSt.classList.remove("error");
+    }
+    try {
+      await enrichTracksWithPreviews(order);
+    } catch (_) {
+      /* blind mode still works; missing clips show as no preview */
+    }
+    if (loadSt) loadSt.textContent = "";
+    if (options.presetCacheArtistId) {
+      setPresetTracksCache(options.presetCacheArtistId, order);
+    }
   }
 
   updateProgress();
@@ -2026,10 +2167,14 @@ async function init() {
     status.textContent = "Loading…";
     try {
       let tracks;
+      let sourceLabelHint = null;
       if (parsed.type === "playlist") tracks = await fetchAllPlaylistTracks(parsed.id);
       else if (parsed.type === "artist") tracks = await fetchArtistTracks(parsed.id);
-      else if (parsed.type === "album") tracks = await fetchAlbumTracks(parsed.id);
-      else if (parsed.type === "track") {
+      else if (parsed.type === "album") {
+        const album = await fetchAlbumTracks(parsed.id);
+        tracks = album.tracks;
+        sourceLabelHint = album.sourceLabel;
+      } else if (parsed.type === "track") {
         status.textContent = "Load a playlist, artist, or album (single track is not enough to rank).";
         status.classList.add("error");
         return;
@@ -2043,10 +2188,8 @@ async function init() {
         status.classList.add("error");
         return;
       }
-      status.textContent = "Loading previews…";
-      await enrichTracksWithPreviews(tracks);
       status.textContent = `Loaded ${tracks.length} tracks.`;
-      const label = await fetchSpotifySourceLabel(parsed);
+      const label = sourceLabelHint ?? (await fetchSpotifySourceLabel(parsed));
       await runRanking(tracks, { sourceLabel: label });
     } catch (e) {
       status.textContent = e.message || String(e);
