@@ -167,8 +167,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Light spacing between Spotify pagination calls; 429 handling adds waits when needed. */
-const SPOTIFY_GAP_MS = 80;
+/** Spacing between Spotify pagination calls (429 retries add extra waits). */
+const SPOTIFY_GAP_MS = 100;
+/** Short pause between different albums when crawling an artist (reduces burst 429s). */
+const SPOTIFY_BETWEEN_ALBUMS_MS = 55;
 
 async function api(pathOrUrl, options = {}) {
   const token = getAccessToken();
@@ -197,7 +199,7 @@ async function api(pathOrUrl, options = {}) {
         const n = parseFloat(raw);
         if (!Number.isNaN(n)) sec = Math.min(600, Math.max(1, n));
       } else {
-        sec = Math.min(120, 6 + attempt * 10 + Math.floor(Math.random() * 6));
+        sec = Math.min(90, 2 + attempt * 5 + Math.floor(Math.random() * 4));
       }
       if (attempt < maxAttempts - 1) {
         await sleep(sec * 1000 + Math.floor(Math.random() * 800));
@@ -391,7 +393,9 @@ async function fetchArtistTracks(artistId) {
 
   const out = [];
   const trackPageLimit = 50;
+  let albumIdx = 0;
   for (const albumId of albums) {
+    if (albumIdx++ > 0) await sleep(SPOTIFY_BETWEEN_ALBUMS_MS);
     let trackOffset = 0;
     for (;;) {
       const data = await api(
@@ -1735,8 +1739,15 @@ function updateUndoButton() {
   btn.disabled = !(choiceHistory.length > 0 && pendingResolve);
 }
 
-function compareTracks(a, b, canDefer = true) {
+async function compareTracks(a, b, canDefer = true) {
   pendingPairForSave = [a.id, b.id];
+  if (currentBlindMode && getAccessToken()) {
+    try {
+      await enrichTracksWithPreviews([a, b]);
+    } catch (_) {
+      /* renderPair still shows embed/no-preview affordances */
+    }
+  }
   return new Promise((resolve) => {
     pendingResolve = (value) => {
       if (value !== 0 && value !== CMP_UNDO && value !== CMP_ABORT) compareStep += 1;
@@ -1800,11 +1811,6 @@ async function runRanking(tracks, options = {}) {
     order = resume.tracks.map((t) => ({ ...t }));
     applyResumeSnapshot(resume, order);
     currentRankingOrder = order;
-    if (currentBlindMode && getAccessToken()) {
-      try {
-        await enrichTracksWithPreviews(order);
-      } catch (_) {}
-    }
   } else {
     order = [...tracks];
     shuffleInPlace(order);
@@ -1829,29 +1835,15 @@ async function runRanking(tracks, options = {}) {
       sl != null && String(sl).trim() !== "" ? String(sl).trim() : guessLabelFromTracks(order);
   }
 
-  if (!resume && currentBlindMode && getAccessToken()) {
-    const loadSt = document.getElementById("load-status");
-    if (loadSt) {
-      loadSt.textContent = "Loading previews…";
-      loadSt.classList.remove("error");
-    }
-    try {
-      await enrichTracksWithPreviews(order);
-    } catch (_) {
-      /* blind mode still works; missing clips show as no preview */
-    }
-    if (loadSt) loadSt.textContent = "";
-    if (options.presetCacheArtistId) {
-      setPresetTracksCache(options.presetCacheArtistId, order);
-    }
-  }
-
   updateProgress();
   showComparePanel(true);
   showResultsPanel(false);
 
   try {
     const ranked = await rankWithPartialOrder(order, { topN: currentRankingTopN });
+    if (options.presetCacheArtistId) {
+      setPresetTracksCache(options.presetCacheArtistId, order);
+    }
     lastShareMeta = { topN: currentRankingTopN, sourceLabel: rankingSourceLabel };
     showComparePanel(false);
     showResultsPanel(true);
