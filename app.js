@@ -167,6 +167,9 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Light spacing between Spotify pagination calls; 429 handling adds waits when needed. */
+const SPOTIFY_GAP_MS = 80;
+
 async function api(pathOrUrl, options = {}) {
   const token = getAccessToken();
   if (!token) throw new Error("Not signed in.");
@@ -303,7 +306,7 @@ async function fetchAllPlaylistTracks(playlistId) {
     offset += items.length;
     if (data.total != null && offset >= data.total) break;
     if (items.length < pageLimit) break;
-    await sleep(160);
+    await sleep(SPOTIFY_GAP_MS);
   }
   return dedupeById(out);
 }
@@ -337,7 +340,7 @@ async function fetchAlbumTracks(albumId) {
     pushPageItems(paging.items);
     let next = paging.next;
     while (next) {
-      await sleep(160);
+      await sleep(SPOTIFY_GAP_MS);
       const data = await api(next);
       pushPageItems(data.items);
       next = data.next;
@@ -355,7 +358,7 @@ async function fetchAlbumTracks(albumId) {
       offset += items.length;
       if (data.total != null && offset >= data.total) break;
       if (items.length < pageLimit) break;
-      await sleep(160);
+      await sleep(SPOTIFY_GAP_MS);
     }
   }
 
@@ -368,7 +371,7 @@ async function fetchAlbumTracks(albumId) {
 async function fetchArtistTracks(artistId) {
   const albumNames = new Map();
   const albums = new Set();
-  const albumPageLimit = 10;
+  const albumPageLimit = 50;
   let albumOffset = 0;
   for (;;) {
     const data = await api(
@@ -383,13 +386,12 @@ async function fetchArtistTracks(artistId) {
     albumOffset += items.length;
     if (data.total != null && albumOffset >= data.total) break;
     if (items.length < albumPageLimit) break;
-    await sleep(220);
+    await sleep(SPOTIFY_GAP_MS);
   }
 
   const out = [];
   const trackPageLimit = 50;
   for (const albumId of albums) {
-    await sleep(280);
     let trackOffset = 0;
     for (;;) {
       const data = await api(
@@ -412,7 +414,7 @@ async function fetchArtistTracks(artistId) {
       trackOffset += items.length;
       if (data.total != null && trackOffset >= data.total) break;
       if (items.length < trackPageLimit) break;
-      await sleep(180);
+      await sleep(SPOTIFY_GAP_MS);
     }
   }
   return dedupeById(out);
@@ -455,7 +457,7 @@ async function enrichTracksWithPreviews(tracks) {
   const unique = [...new Set(ids)];
   const chunk = 50;
   for (let i = 0; i < unique.length; i += chunk) {
-    if (i > 0) await sleep(380);
+    if (i > 0) await sleep(SPOTIFY_GAP_MS);
     const slice = unique.slice(i, i + chunk);
     const data = await api(`/tracks?ids=${slice.map(encodeURIComponent).join(",")}`);
     const byId = new Map((data.tracks || []).filter(Boolean).map((tr) => [tr.id, tr]));
