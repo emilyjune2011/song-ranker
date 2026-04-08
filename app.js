@@ -912,28 +912,6 @@ function saveProgressNow(statusEl) {
   }
 }
 
-function duplicateProgressAsNamed() {
-  const snap = getSelectedProgressSnapshot();
-  const status = document.getElementById("progress-status");
-  if (!snap || !isValidProgressSnapshot(snap)) {
-    if (status) {
-      status.textContent = "Pick a session from the list first.";
-      status.classList.add("error");
-    }
-    return;
-  }
-  const name = prompt("Name for this copy:");
-  if (!name?.trim()) return;
-  const list = getNamedProgressList();
-  list.push({ id: newSaveId(), name: name.trim(), savedAt: Date.now(), snapshot: snap });
-  setNamedProgressList(list);
-  refreshProgressPicker();
-  if (status) {
-    status.textContent = "Copy saved.";
-    status.classList.remove("error");
-  }
-}
-
 function deleteSelectedProgress() {
   const sel = document.getElementById("progress-pick");
   const id = sel?.value;
@@ -962,53 +940,6 @@ function deleteSelectedProgress() {
     status.textContent = "Deleted.";
     status.classList.remove("error");
   }
-}
-
-function exportProgressJsonFile() {
-  const snap = buildProgressSnapshot() || getSelectedProgressSnapshot();
-  const status = document.getElementById("progress-status");
-  if (!snap) {
-    if (status) {
-      status.textContent = "Pick a session from the list, or save while you’re ranking.";
-      status.classList.add("error");
-    }
-    return;
-  }
-  downloadTextFile(`song-ranker-progress-${Date.now()}.json`, JSON.stringify(snap, null, 2), "application/json");
-  if (status) {
-    status.textContent = "Download started.";
-    status.classList.remove("error");
-  }
-}
-
-function importProgressFromFile(file) {
-  const reader = new FileReader();
-  const status = document.getElementById("progress-status");
-  reader.onload = () => {
-    try {
-      const snap = JSON.parse(reader.result);
-      if (!isValidProgressSnapshot(snap)) throw new Error("Invalid song ranker progress file.");
-      const list = getNamedProgressList();
-      list.push({
-        id: newSaveId(),
-        name: `Imported ${new Date().toLocaleString()}`,
-        savedAt: Date.now(),
-        snapshot: snap,
-      });
-      setNamedProgressList(list);
-      refreshProgressPicker();
-      if (status) {
-        status.textContent = "Uploaded. Pick it above and tap Continue.";
-        status.classList.remove("error");
-      }
-    } catch (e) {
-      if (status) {
-        status.textContent = e.message || String(e);
-        status.classList.add("error");
-      }
-    }
-  };
-  reader.readAsText(file);
 }
 
 function csvEscapeCell(s) {
@@ -2038,21 +1969,7 @@ async function init() {
     await runRanking([], { resumeSnapshot: snap });
   });
 
-  document.getElementById("btn-save-progress-named")?.addEventListener("click", duplicateProgressAsNamed);
-
   document.getElementById("btn-delete-progress")?.addEventListener("click", deleteSelectedProgress);
-
-  document.getElementById("btn-export-progress-json")?.addEventListener("click", exportProgressJsonFile);
-
-  document.getElementById("btn-import-progress")?.addEventListener("click", () => {
-    document.getElementById("import-progress-file")?.click();
-  });
-
-  document.getElementById("import-progress-file")?.addEventListener("change", (e) => {
-    const f = e.target.files?.[0];
-    if (f) importProgressFromFile(f);
-    e.target.value = "";
-  });
 
   document.getElementById("btn-export")?.addEventListener("click", () => {
     const ranked = window.__lastRanked;
