@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=27" />
+  <link rel="stylesheet" href="styles.css?v=29" />
 </head>
 <body>
   <div class="app">
@@ -46,53 +46,37 @@
 
     <section id="panel-setup" class="panel panel-elevated">
       <h2>1. Sign in</h2>
-      <p id="hint-connect" class="hint">
-        Redirect URI for your app: <code id="redirect-uri-display"></code> — add it in the
-        <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify dashboard</a>.
-      </p>
-      <div id="client-setup-block">
-        <p class="hint">Local: paste Client ID or use <code>config.js</code>.</p>
-        <div class="field field-tight">
-          <label class="field-label" for="client-id">Client ID</label>
-          <input id="client-id" type="text" autocomplete="off" placeholder="Optional if set in config.js" />
-        </div>
-        <div class="actions actions-tight">
-          <button type="button" id="btn-save-client" class="btn secondary btn-sm">Save</button>
-        </div>
-      </div>
       <div class="actions actions-tight">
         <button type="button" id="btn-login" class="btn primary">Sign in with Spotify</button>
       </div>
       <p id="user-display" class="user-display hidden" role="status" aria-live="polite"></p>
       <p id="auth-status" class="status"></p>
 
-      <h2>2. Load &amp; options</h2>
-      <p class="hint">Paste a playlist, artist, or album link — or use a preset.</p>
+      <details class="panel-details dev-setup-details">
+        <summary>Developer setup</summary>
+        <div class="details-body">
+          <p class="hint">Use this redirect URI in your <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify app</a>:</p>
+          <p class="redirect-uri-line"><code id="redirect-uri-display"></code></p>
+          <div id="client-setup-block">
+            <div class="field field-tight">
+              <label class="field-label" for="client-id">Client ID</label>
+              <input id="client-id" type="text" autocomplete="off" placeholder="Optional if set in config.js" />
+            </div>
+            <div class="actions actions-tight">
+              <button type="button" id="btn-save-client" class="btn secondary btn-sm">Save</button>
+            </div>
+          </div>
+        </div>
+      </details>
 
-      <div class="options-grid">
-        <div class="field field-tight">
-          <label class="field-label" for="ranking-mode">Ranking goal</label>
-          <p class="field-hint">Full list or stop after a top band (fewer picks).</p>
-          <select id="ranking-mode" class="select-input">
-            <option value="full">Complete ranking</option>
-            <option value="25">Top 25</option>
-            <option value="100">Top 100</option>
-          </select>
+      <h2>2. Load</h2>
+      <div class="preset-block">
+        <div class="preset-block-head">
+          <span class="preset-block-title">Quick start</span>
+          <span class="preset-block-badge">Presets</span>
         </div>
-        <div class="field field-tight">
-          <label class="field-label" for="compare-experience">How to compare</label>
-          <p class="field-hint">Standard shows names &amp; embeds. Blind uses 30s previews only.</p>
-          <select id="compare-experience" class="select-input">
-            <option value="standard">Standard</option>
-            <option value="blind">Blind (audio only)</option>
-          </select>
-        </div>
+        <div id="preset-buttons" class="preset-buttons"></div>
       </div>
-      <p class="hint hint-tight blind-hint">
-        Blind mode hides titles and embeds so you judge by sound. Tracks without a Spotify preview show a short notice — you can still pick a side.
-      </p>
-
-      <div id="preset-buttons" class="preset-buttons"></div>
       <div class="field field-tight">
         <label class="field-label" for="spotify-url">Spotify URL</label>
         <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/…" />
@@ -102,8 +86,40 @@
       </div>
       <p id="load-status" class="status"></p>
 
-      <h2 class="h2-tight">Saved</h2>
-      <p class="hint hint-tight">On this device only. Use backup to move to another device.</p>
+      <h2>3. Options</h2>
+      <div class="options-grid">
+        <div class="field field-option-card">
+          <label class="field-label" for="ranking-mode">Ranking goal</label>
+          <select id="ranking-mode" class="select-input">
+            <option value="full">Complete ranking</option>
+            <option value="25">Top 25</option>
+            <option value="100">Top 100</option>
+          </select>
+        </div>
+        <div class="field field-option-card">
+          <label class="field-label" for="compare-experience">How to compare</label>
+          <select id="compare-experience" class="select-input">
+            <option value="standard">Standard</option>
+            <option value="blind">Blind (audio only)</option>
+          </select>
+        </div>
+      </div>
+
+      <h2 class="h2-tight">4. Saved</h2>
+
+      <div id="cloud-panel" class="cloud-panel">
+        <div class="cloud-panel-head">
+          <span class="cloud-panel-title">Cloud</span>
+          <span class="cloud-panel-via">Supabase</span>
+        </div>
+        <p id="cloud-status" class="status cloud-status" role="status"></p>
+        <div class="actions actions-tight cloud-actions">
+          <button type="button" id="btn-cloud-sync" class="btn primary btn-sm" disabled>Sync to cloud</button>
+          <button type="button" id="btn-cloud-restore" class="btn secondary btn-sm" disabled>Restore from cloud</button>
+        </div>
+      </div>
+
+      <p class="section-label">This device</p>
 
       <details class="panel-details">
         <summary>In progress</summary>
@@ -246,7 +262,7 @@
       <p id="copy-status" class="status status-tight"></p>
     </section>
   </div>
-  <script src="config.js?v=27"></script>
-  <script src="app.js?v=27" defer></script>
+  <script src="config.js?v=28"></script>
+  <script src="app.js?v=29" defer></script>
 </body>
 </html>

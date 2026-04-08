@@ -1311,6 +1311,169 @@ function renderSavedRankingsList() {
   }
 }
 
+let supabaseClient = null;
+
+function getLocalSyncPayload() {
+  return {
+    v: 1,
+    savedRankings: JSON.parse(localStorage.getItem(LS_SAVED_RANKINGS) || "[]"),
+    namedProgress: JSON.parse(localStorage.getItem(LS_PROGRESS_NAMED) || "[]"),
+    autosave: localStorage.getItem(LS_PROGRESS_AUTOSAVE),
+  };
+}
+
+function applyCloudPayload(obj) {
+  if (!obj || obj.v !== 1) throw new Error("Unsupported or missing cloud data.");
+  localStorage.setItem(LS_SAVED_RANKINGS, JSON.stringify(Array.isArray(obj.savedRankings) ? obj.savedRankings : []));
+  localStorage.setItem(LS_PROGRESS_NAMED, JSON.stringify(Array.isArray(obj.namedProgress) ? obj.namedProgress : []));
+  if (obj.autosave && typeof obj.autosave === "string") {
+    localStorage.setItem(LS_PROGRESS_AUTOSAVE, obj.autosave);
+  } else {
+    localStorage.removeItem(LS_PROGRESS_AUTOSAVE);
+  }
+  renderSavedRankingsList();
+  refreshProgressPicker();
+}
+
+async function initCloudSync() {
+  const url = (typeof window.SONG_RANKER_SUPABASE_URL === "string" ? window.SONG_RANKER_SUPABASE_URL : "").trim();
+  const key = (typeof window.SONG_RANKER_SUPABASE_ANON_KEY === "string" ? window.SONG_RANKER_SUPABASE_ANON_KEY : "").trim();
+  const statusEl = document.getElementById("cloud-status");
+  const syncBtn = document.getElementById("btn-cloud-sync");
+  const restoreBtn = document.getElementById("btn-cloud-restore");
+
+  const setStatus = (text, isErr) => {
+    if (!statusEl) return;
+    statusEl.textContent = text;
+    statusEl.classList.toggle("error", !!isErr);
+  };
+
+  const disableCloud = (msg) => {
+    setStatus(msg, false);
+    if (syncBtn) syncBtn.disabled = true;
+    if (restoreBtn) restoreBtn.disabled = true;
+  };
+
+  if (!url || !key) {
+    disableCloud("Add your Supabase project URL and anon key in config.js to use cloud sync.");
+    return;
+  }
+
+  if (window.location.protocol === "file:") {
+    disableCloud("Cloud sync needs HTTP hosting (not file://).");
+    return;
+  }
+
+  try {
+    const mod = await import("https://esm.sh/@supabase/supabase-js@2.49.1");
+    supabaseClient = mod.createClient(url, key, {
+      auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
+    });
+  } catch (e) {
+    disableCloud(`Could not load Supabase: ${e.message || e}`);
+    return;
+  }
+
+  try {
+    const { data: { session } } = await supabaseClient.auth.getSession();
+    if (!session) {
+      const { error } = await supabaseClient.auth.signInAnonymously();
+      if (error) {
+        setStatus(
+          `${error.message} Enable Anonymous sign-ins under Authentication → Providers in Supabase if needed.`,
+          true
+        );
+        if (syncBtn) syncBtn.disabled = true;
+        if (restoreBtn) restoreBtn.disabled = true;
+        return;
+      }
+    }
+    setStatus("Cloud ready — sync uploads your saved lists and in-progress sessions.");
+  } catch (e) {
+    setStatus(e.message || String(e), true);
+    if (syncBtn) syncBtn.disabled = true;
+    if (restoreBtn) restoreBtn.disabled = true;
+    return;
+  }
+
+  if (syncBtn) syncBtn.disabled = false;
+  if (restoreBtn) restoreBtn.disabled = false;
+
+  const wireOnce = (el, fn) => {
+    if (!el || el.dataset.cloudWired) return;
+    el.dataset.cloudWired = "1";
+    el.addEventListener("click", fn);
+  };
+
+  wireOnce(syncBtn, async () => {
+    const st = document.getElementById("cloud-status");
+    try {
+      if (st) {
+        st.textContent = "Uploading…";
+        st.classList.remove("error");
+      }
+      let { data: { session } } = await supabaseClient.auth.getSession();
+      if (!session) {
+        const { error } = await supabaseClient.auth.signInAnonymously();
+        if (error) throw error;
+        ({ data: { session } } = await supabaseClient.auth.getSession());
+      }
+      const uid = session?.user?.id;
+      if (!uid) throw new Error("Not signed in to cloud.");
+      const payload = getLocalSyncPayload();
+      const { error } = await supabaseClient.from("song_ranker_sync").upsert(
+        {
+          user_id: uid,
+          data: payload,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "user_id" }
+      );
+      if (error) throw error;
+      if (st) {
+        st.textContent = "Synced to cloud.";
+        st.classList.remove("error");
+      }
+    } catch (e) {
+      if (st) {
+        st.textContent = e.message || String(e);
+        st.classList.add("error");
+      }
+    }
+  });
+
+  wireOnce(restoreBtn, async () => {
+    const st = document.getElementById("cloud-status");
+    try {
+      if (!confirm("Replace this device’s saved lists and sessions with the cloud copy?")) return;
+      if (st) {
+        st.textContent = "Downloading…";
+        st.classList.remove("error");
+      }
+      let { data: { session } } = await supabaseClient.auth.getSession();
+      if (!session) {
+        const { error } = await supabaseClient.auth.signInAnonymously();
+        if (error) throw error;
+        ({ data: { session } } = await supabaseClient.auth.getSession());
+      }
+      if (!session?.user?.id) throw new Error("Not signed in to cloud.");
+      const { data, error } = await supabaseClient.from("song_ranker_sync").select("data").maybeSingle();
+      if (error) throw error;
+      if (!data?.data) throw new Error("Nothing in cloud yet.");
+      applyCloudPayload(data.data);
+      if (st) {
+        st.textContent = "Restored from cloud.";
+        st.classList.remove("error");
+      }
+    } catch (e) {
+      if (st) {
+        st.textContent = e.message || String(e);
+        st.classList.add("error");
+      }
+    }
+  });
+}
+
 function renderRankedList(ranked) {
   const ol = document.getElementById("ranked-list");
   if (!ol) return;
@@ -1722,11 +1885,12 @@ function initCompareKeyboard() {
   });
 }
 
-function init() {
+async function init() {
   initTheme();
   initCompareKeyboard();
   renderSavedRankingsList();
   refreshProgressPicker();
+  await initCloudSync();
   setRedirectDisplay();
   if (window.location.protocol === "file:") {
     const auth = document.getElementById("auth-status");
@@ -1740,13 +1904,8 @@ function init() {
 
   const bakedId = (typeof window.SONG_RANKER_CLIENT_ID === "string" ? window.SONG_RANKER_CLIENT_ID : "").trim();
   const clientSetup = document.getElementById("client-setup-block");
-  const hintConnect = document.getElementById("hint-connect");
   if (bakedId && clientSetup) {
     clientSetup.classList.add("hidden");
-    if (hintConnect) {
-      hintConnect.innerHTML =
-        "Tap <strong>Sign in</strong> — this app is already configured for Spotify.";
-    }
   }
 
   const clientInput = document.getElementById("client-id");
@@ -1821,7 +1980,7 @@ function init() {
     for (const p of RANK_PRESETS) {
       const b = document.createElement("button");
       b.type = "button";
-      b.className = "btn secondary";
+      b.className = "btn btn-preset";
       b.textContent = p.label;
       b.addEventListener("click", () => loadFromPreset(p));
       presetWrap.appendChild(b);
@@ -1940,4 +2099,4 @@ function init() {
   });
 }
 
-init();
+init().catch((err) => console.error(err));
