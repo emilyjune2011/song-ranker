@@ -424,6 +424,34 @@ html.theme-auto .load-url-col {
   border-color: color-mix(in srgb, var(--accent) 85%, #fff);
 }
 
+.preset-buttons .btn-preset.preset-selected {
+  border-color: color-mix(in srgb, var(--accent) 70%, #fff);
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--accent) 58%, var(--bg-elevated)),
+    color-mix(in srgb, var(--accent) 32%, var(--bg-elevated))
+  );
+  color: #0a0a0c;
+  font-weight: 750;
+  box-shadow:
+    0 0 0 3px var(--accent-glow),
+    0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent),
+    0 8px 28px rgba(30, 215, 96, 0.5);
+  transform: scale(1.03);
+  position: relative;
+  z-index: 1;
+}
+
+.preset-buttons .btn-preset.preset-selected:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 3px;
+}
+
+html.theme-light .preset-buttons .btn-preset.preset-selected,
+html.theme-auto .preset-buttons .btn-preset.preset-selected {
+  color: #0b0b0d;
+}
+
 html.theme-light .preset-buttons .btn-preset,
 html.theme-auto .preset-buttons .btn-preset {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);

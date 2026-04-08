@@ -17,6 +17,9 @@ const SS_VERIFIER = "song_ranker_pkce_verifier";
 const SS_TOKEN = "song_ranker_access_token";
 const SS_EXPIRES = "song_ranker_token_expires_at";
 
+/** Spotify artist preset id when user picked Quick start (not started until Start ranking). */
+let selectedPresetId = null;
+
 function basePath() {
   const p = window.location.pathname;
   if (p.endsWith("/")) return p;
@@ -82,11 +85,62 @@ function setAccessToken(token, expiresInSec) {
   sessionStorage.setItem(SS_EXPIRES, String(Date.now() + expiresInSec * 1000));
 }
 
+function tokenHasPlaylistReadScope(token) {
+  if (!token) return false;
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return true;
+    const json = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    const scopes = (json.scope || "").split(/\s+/).filter(Boolean);
+    return scopes.includes("playlist-read-private");
+  } catch {
+    return true;
+  }
+}
+
+function updateLoadButtonState() {
+  const btn = document.getElementById("btn-load");
+  if (!btn) return;
+  const token = getAccessToken();
+  if (!token || !tokenHasPlaylistReadScope(token)) {
+    btn.disabled = true;
+    return;
+  }
+  const url = (document.getElementById("spotify-url")?.value || "").trim();
+  const hasPreset = selectedPresetId != null;
+  const hasUrl = url.length > 0;
+  btn.disabled = !(hasPreset || hasUrl);
+}
+
+function clearPresetSelectionUI() {
+  selectedPresetId = null;
+  document.querySelectorAll("#preset-buttons .btn-preset").forEach((b) => {
+    b.classList.remove("preset-selected");
+    b.setAttribute("aria-pressed", "false");
+  });
+  updateLoadButtonState();
+}
+
+function selectPreset(preset) {
+  if (selectedPresetId === preset.id) {
+    clearPresetSelectionUI();
+    return;
+  }
+  selectedPresetId = preset.id;
+  const urlInput = document.getElementById("spotify-url");
+  if (urlInput) urlInput.value = "";
+  document.querySelectorAll("#preset-buttons .btn-preset").forEach((b) => {
+    const isSel = b.dataset.presetId === preset.id;
+    b.classList.toggle("preset-selected", isSel);
+    b.setAttribute("aria-pressed", isSel ? "true" : "false");
+  });
+  updateLoadButtonState();
+}
+
 function clearAuth() {
   sessionStorage.removeItem(SS_TOKEN);
   sessionStorage.removeItem(SS_EXPIRES);
-  const loadBtn = document.getElementById("btn-load");
-  if (loadBtn) loadBtn.disabled = true;
+  clearPresetSelectionUI();
   updateSpotifySignOutVisibility();
   void refreshSpotifyUserDisplay();
 }
@@ -361,15 +415,8 @@ async function enrichTracksWithPreviews(tracks) {
  */
 const RANK_PRESETS = [{ id: "5K4W6rqBFWDnAN6FQUkS6x", label: "Kanye West" }];
 
-async function loadFromPreset(preset) {
+async function startRankingFromPreset(preset) {
   const status = document.getElementById("load-status");
-  status.textContent = "";
-  status.classList.remove("error");
-  if (!getAccessToken()) {
-    status.textContent = "Sign in with Spotify first.";
-    status.classList.add("error");
-    return;
-  }
   status.textContent = "Loading…";
   try {
     const tracks = await fetchArtistTracks(preset.id);
@@ -378,7 +425,7 @@ async function loadFromPreset(preset) {
       status.classList.add("error");
       return;
     }
-    status.textContent = `Loading previews…`;
+    status.textContent = "Loading previews…";
     await enrichTracksWithPreviews(tracks);
     status.textContent = `Loaded ${tracks.length} tracks.`;
     await runRanking(tracks, { sourceLabel: `Artist: ${preset.label}` });
@@ -1763,7 +1810,6 @@ async function handleAuthReturn() {
     setAccessToken(data.access_token, data.expires_in);
     sessionStorage.removeItem(SS_VERIFIER);
     const granted = new Set((data.scope || "").split(/\s+/).filter(Boolean));
-    const loadBtn = document.getElementById("btn-load");
     if (!granted.has("playlist-read-private")) {
       const authEl = document.getElementById("auth-status");
       if (authEl) {
@@ -1771,13 +1817,12 @@ async function handleAuthReturn() {
           "Spotify did not grant playlist access. In the Spotify Developer Dashboard, open your app → Settings and ensure playlist scopes are enabled, then use Sign out and sign in again.";
         authEl.classList.add("error");
       }
-      if (loadBtn) loadBtn.disabled = true;
     } else {
       document.getElementById("auth-status").classList.remove("error");
-      if (loadBtn) loadBtn.disabled = false;
     }
     await refreshSpotifyUserDisplay();
     updateSpotifySignOutVisibility();
+    updateLoadButtonState();
   } catch (e) {
     document.getElementById("auth-status").textContent = e.message || String(e);
     document.getElementById("auth-status").classList.add("error");
@@ -1918,29 +1963,36 @@ async function init() {
   document.getElementById("btn-login")?.addEventListener("click", startLogin);
 
   if (getAccessToken()) {
-    document.getElementById("btn-load").disabled = false;
     refreshSpotifyUserDisplay().catch(() => {});
   }
   updateSpotifySignOutVisibility();
+  updateLoadButtonState();
 
   document.getElementById("btn-logout-spotify")?.addEventListener("click", signOutSpotify);
 
   handleAuthReturn().catch(() => {});
 
   document.getElementById("btn-load")?.addEventListener("click", async () => {
-    const url = document.getElementById("spotify-url").value;
     const status = document.getElementById("load-status");
     status.textContent = "";
     status.classList.remove("error");
 
-    const parsed = parseSpotifyInput(url);
-    if (!parsed) {
-      status.textContent = "Could not read a Spotify playlist or artist link.";
+    if (!getAccessToken()) {
+      status.textContent = "Sign in with Spotify first.";
       status.classList.add("error");
       return;
     }
-    if (!getAccessToken()) {
-      status.textContent = "Sign in with Spotify first.";
+
+    const preset = selectedPresetId ? RANK_PRESETS.find((p) => p.id === selectedPresetId) : null;
+    if (preset) {
+      await startRankingFromPreset(preset);
+      return;
+    }
+
+    const url = document.getElementById("spotify-url").value;
+    const parsed = parseSpotifyInput(url);
+    if (!parsed) {
+      status.textContent = "Could not read a Spotify playlist or artist link.";
       status.classList.add("error");
       return;
     }
@@ -1976,14 +2028,27 @@ async function init() {
     }
   });
 
+  document.getElementById("spotify-url")?.addEventListener("input", () => {
+    const v = (document.getElementById("spotify-url")?.value || "").trim();
+    if (v.length === 0) {
+      updateLoadButtonState();
+      return;
+    }
+    clearPresetSelectionUI();
+  });
+
   const presetWrap = document.getElementById("preset-buttons");
   if (presetWrap) {
+    presetWrap.setAttribute("role", "group");
+    presetWrap.setAttribute("aria-label", "Quick start presets");
     for (const p of RANK_PRESETS) {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "btn btn-preset";
       b.textContent = p.label;
-      b.addEventListener("click", () => loadFromPreset(p));
+      b.dataset.presetId = p.id;
+      b.setAttribute("aria-pressed", "false");
+      b.addEventListener("click", () => selectPreset(p));
       presetWrap.appendChild(b);
     }
   }
