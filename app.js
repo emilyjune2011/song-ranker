@@ -226,6 +226,96 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Clears Retry-After countdown UI (new load or new wait). */
+let rateLimitCountdownInterval = null;
+
+function clearRateLimitCountdownUi() {
+  if (rateLimitCountdownInterval) {
+    clearInterval(rateLimitCountdownInterval);
+    rateLimitCountdownInterval = null;
+  }
+}
+
+/**
+ * During automatic 429 retries: wait totalMs and show a live countdown.
+ * Spotify recommends waiting Retry-After seconds before calling the Web API again.
+ */
+async function waitWithRetryAfterCountdown(totalMs, rawHint) {
+  const el = document.getElementById("load-status");
+  if (!el || totalMs < 1500) {
+    await sleep(totalMs);
+    return;
+  }
+  clearRateLimitCountdownUi();
+  const end = Date.now() + totalMs;
+  const tick = () => {
+    const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
+    el.textContent = rawHint
+      ? `Spotify rate limited — next API call in ${left}s (Retry-After: ${rawHint}).`
+      : `Spotify rate limited — next API call in ${left}s (Retry-After).`;
+    el.classList.add("error");
+  };
+  tick();
+  rateLimitCountdownInterval = setInterval(tick, 1000);
+  await sleep(totalMs);
+  clearInterval(rateLimitCountdownInterval);
+  rateLimitCountdownInterval = null;
+}
+
+/** After all retries fail: countdown until user should try again (last Retry-After). */
+function showTryAgainAfterRateLimit(seconds, rawHeader) {
+  clearRateLimitCountdownUi();
+  const el = document.getElementById("load-status");
+  if (!el) return;
+  let left = Math.max(1, Math.ceil(seconds));
+  const render = () => {
+    el.textContent = rawHeader
+      ? `Rate limit reached. Try again in ${left}s (Retry-After: ${rawHeader}).`
+      : `Rate limit reached. Try again in ${left}s.`;
+    el.classList.add("error");
+  };
+  render();
+  rateLimitCountdownInterval = setInterval(() => {
+    left -= 1;
+    if (left <= 0) {
+      clearRateLimitCountdownUi();
+      el.textContent = "You can try loading again.";
+      el.classList.remove("error");
+      return;
+    }
+    render();
+  }, 1000);
+}
+
+function applyLoadStatusError(status, e) {
+  if (!status) return;
+  if (e && typeof e.retryAfterSeconds === "number") {
+    showTryAgainAfterRateLimit(e.retryAfterSeconds, e.retryAfterHeader);
+    return;
+  }
+  status.textContent = e.message || String(e);
+  status.classList.add("error");
+}
+
+/** Retry-After can be seconds (string) or HTTP-date (RFC 7231). */
+function parseRetryAfterSeconds(raw) {
+  if (raw == null || raw === "") return null;
+  const t = String(raw).trim();
+  if (/^\d+(\.\d+)?$/.test(t)) {
+    const n = parseFloat(t);
+    return Math.min(600, Math.max(1, n));
+  }
+  const ms = Date.parse(t);
+  if (!Number.isNaN(ms)) {
+    const sec = Math.ceil((ms - Date.now()) / 1000);
+    return Math.min(600, Math.max(1, sec));
+  }
+  return null;
+}
+
+/** After 429, brief pause before the next Web API call (avoids immediate re-throttle). */
+let spotifyApiCooldownUntil = 0;
+
 /** Spacing between Spotify pagination calls (429 retries add extra waits). */
 const SPOTIFY_GAP_MS = 100;
 /** Short pause between different albums when crawling an artist (reduces burst 429s). */
@@ -237,7 +327,16 @@ async function api(pathOrUrl, options = {}) {
   const url = pathOrUrl.startsWith("http")
     ? pathOrUrl
     : `https://api.spotify.com/v1${pathOrUrl}`;
-  const maxAttempts = 6;
+
+  const preWait = spotifyApiCooldownUntil - Date.now();
+  if (preWait > 0 && preWait < 10 * 60_000) {
+    await waitWithRetryAfterCountdown(preWait, "");
+  }
+
+  const maxAttempts = 8;
+  let last429Header = null;
+  let last429Sec = 0;
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const res = await fetch(url, {
       ...options,
@@ -247,28 +346,38 @@ async function api(pathOrUrl, options = {}) {
       },
     });
     if (res.status === 401) {
+      spotifyApiCooldownUntil = 0;
       clearAuth();
       throw new Error("Session expired. Sign in again.");
     }
     if (res.status === 429) {
       await res.text().catch(() => {});
       const raw = res.headers.get("Retry-After");
-      let sec;
-      if (raw != null && raw !== "") {
-        const n = parseFloat(raw);
-        if (!Number.isNaN(n)) sec = Math.min(600, Math.max(1, n));
-      } else {
-        sec = Math.min(90, 2 + attempt * 5 + Math.floor(Math.random() * 4));
+      last429Header = raw;
+      let sec = parseRetryAfterSeconds(raw);
+      if (sec == null) {
+        sec = Math.min(120, 6 + attempt * 10 + Math.floor(Math.random() * 6));
       }
+      last429Sec = sec;
+      spotifyApiCooldownUntil = Date.now() + sec * 1000 + 300;
       if (attempt < maxAttempts - 1) {
-        await sleep(sec * 1000 + Math.floor(Math.random() * 800));
+        const jitter = Math.floor(Math.random() * 600);
+        const waitMs = sec * 1000 + jitter;
+        const hint =
+          last429Header != null && last429Header !== "" ? String(last429Header) : "";
+        await waitWithRetryAfterCountdown(waitMs, hint);
         continue;
       }
-      throw new Error(
-        `Spotify rate limited this app (shared quota for all users). Wait a few minutes and try again, or use Standard comparison to skip extra API calls. Extended Quota can be requested in the Spotify Developer Dashboard.`
+      const err = new Error(
+        `Spotify rate limit: wait before retrying. Limits are per app (Client ID) and are often tight in Development mode. Try “How to compare” → Standard, load an album or playlist instead of a full artist, or ask the owner to request Extended Quota in the Spotify Developer Dashboard.`
       );
+      err.retryAfterSeconds = Math.ceil(last429Sec);
+      err.retryAfterHeader = last429Header;
+      err.code = "SPOTIFY_429";
+      throw err;
     }
     if (!res.ok) {
+      spotifyApiCooldownUntil = 0;
       const err = await res.json().catch(() => ({}));
       const detail = spotifyApiErrorMessage(err) || `${res.status} ${res.statusText}`;
       if (res.status === 403) {
@@ -290,8 +399,10 @@ async function api(pathOrUrl, options = {}) {
       }
       throw new Error(detail);
     }
+    spotifyApiCooldownUntil = 0;
     return res.json();
   }
+  spotifyApiCooldownUntil = 0;
   throw new Error("Spotify API: too many retries.");
 }
 
@@ -571,6 +682,7 @@ function setPresetTracksCache(artistId, tracks) {
 
 async function startRankingFromPreset(preset) {
   const status = document.getElementById("load-status");
+  clearRateLimitCountdownUi();
   status.textContent = "Loading…";
   try {
     let tracks = getPresetTracksCache(preset.id);
@@ -594,8 +706,7 @@ async function startRankingFromPreset(preset) {
       presetCacheArtistId: preset.id,
     });
   } catch (e) {
-    status.textContent = e.message || String(e);
-    status.classList.add("error");
+    applyLoadStatusError(status, e);
   }
 }
 
@@ -2198,6 +2309,7 @@ async function init() {
 
   document.getElementById("btn-load")?.addEventListener("click", async () => {
     const status = document.getElementById("load-status");
+    clearRateLimitCountdownUi();
     status.textContent = "";
     status.classList.remove("error");
 
@@ -2249,8 +2361,7 @@ async function init() {
       const label = sourceLabelHint ?? (await fetchSpotifySourceLabel(parsed));
       await runRanking(tracks, { sourceLabel: label });
     } catch (e) {
-      status.textContent = e.message || String(e);
-      status.classList.add("error");
+      applyLoadStatusError(status, e);
     }
   });
 
