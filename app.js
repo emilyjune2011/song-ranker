@@ -12,6 +12,7 @@ const LS_CLIENT = "song_ranker_spotify_client_id";
 const LS_SAVED_RANKINGS = "song_ranker_saved_rankings";
 const LS_PROGRESS_AUTOSAVE = "song_ranker_progress_autosave";
 const LS_PROGRESS_NAMED = "song_ranker_progress_named";
+const LS_THEME = "song_ranker_theme";
 const SS_VERIFIER = "song_ranker_pkce_verifier";
 const SS_TOKEN = "song_ranker_access_token";
 const SS_EXPIRES = "song_ranker_token_expires_at";
@@ -290,6 +291,7 @@ function normalizeTrack(t) {
     artists,
     album: t.album?.name || "",
     url: t.external_urls?.spotify || spotifyTrackUrl(t.id),
+    previewUrl: t.preview_url || null,
   };
 }
 
@@ -301,8 +303,31 @@ function dedupeById(tracks) {
   const map = new Map();
   for (const t of tracks) {
     if (!map.has(t.id)) map.set(t.id, t);
+    else {
+      const cur = map.get(t.id);
+      if (!cur.previewUrl && t.previewUrl) cur.previewUrl = t.previewUrl;
+    }
   }
   return [...map.values()];
+}
+
+async function enrichTracksWithPreviews(tracks) {
+  const ids = [];
+  for (const t of tracks) {
+    if (t.previewUrl || !t.id || String(t.id).startsWith("manual")) continue;
+    ids.push(t.id);
+  }
+  const unique = [...new Set(ids)];
+  const chunk = 50;
+  for (let i = 0; i < unique.length; i += chunk) {
+    const slice = unique.slice(i, i + chunk);
+    const data = await api(`/tracks?ids=${slice.map(encodeURIComponent).join(",")}`);
+    const byId = new Map((data.tracks || []).filter(Boolean).map((tr) => [tr.id, tr]));
+    for (const t of tracks) {
+      const tr = byId.get(t.id);
+      if (tr && !t.previewUrl) t.previewUrl = tr.preview_url || null;
+    }
+  }
 }
 
 /**
@@ -328,6 +353,8 @@ async function loadFromPreset(preset) {
       status.classList.add("error");
       return;
     }
+    status.textContent = `Loading previews…`;
+    await enrichTracksWithPreviews(tracks);
     status.textContent = `Loaded ${tracks.length} tracks.`;
     await runRanking(tracks, { sourceLabel: `Artist: ${preset.label}` });
   } catch (e) {
@@ -385,6 +412,7 @@ function updateProgress() {
 function showComparePanel(show) {
   document.getElementById("panel-setup")?.classList.toggle("hidden", show);
   document.getElementById("panel-compare")?.classList.toggle("hidden", !show);
+  document.getElementById("compare-kb-hint")?.setAttribute("aria-hidden", show ? "false" : "true");
 }
 
 function showResultsPanel(show) {
@@ -426,12 +454,65 @@ function setTrackEmbed(iframeId, wrapId, track) {
 }
 
 function renderPair(a, b) {
-  document.getElementById("title-a").textContent = a.name;
-  document.getElementById("meta-a").textContent = [a.artists, a.album].filter(Boolean).join(" · ");
-  document.getElementById("title-b").textContent = b.name;
-  document.getElementById("meta-b").textContent = [b.artists, b.album].filter(Boolean).join(" · ");
-  setTrackEmbed("embed-a", "embed-wrap-a", a);
-  setTrackEmbed("embed-b", "embed-wrap-b", b);
+  const blind = !!currentBlindMode;
+  const panel = document.getElementById("panel-compare");
+  panel?.classList.toggle("blind-mode", blind);
+
+  if (blind) {
+    document.getElementById("embed-wrap-a")?.classList.add("hidden");
+    document.getElementById("embed-wrap-b")?.classList.add("hidden");
+    document.getElementById("embed-a")?.removeAttribute("src");
+    document.getElementById("embed-b")?.removeAttribute("src");
+    document.getElementById("blind-wrap-a")?.classList.remove("hidden");
+    document.getElementById("blind-wrap-b")?.classList.remove("hidden");
+
+    document.getElementById("title-a").textContent = "Side A";
+    document.getElementById("meta-a").textContent = "Listen · pick the clip you prefer";
+    document.getElementById("title-b").textContent = "Side B";
+    document.getElementById("meta-b").textContent = "Listen · pick the clip you prefer";
+    document.getElementById("card-a")?.setAttribute("aria-label", "Prefer side A");
+    document.getElementById("card-b")?.setAttribute("aria-label", "Prefer side B");
+
+    const puA = a.previewUrl || "";
+    const puB = b.previewUrl || "";
+    const audioA = document.getElementById("audio-a");
+    const audioB = document.getElementById("audio-b");
+    if (audioA) {
+      audioA.pause();
+      audioA.src = puA || "";
+      audioA.load();
+    }
+    if (audioB) {
+      audioB.pause();
+      audioB.src = puB || "";
+      audioB.load();
+    }
+    document.getElementById("blind-no-preview-a")?.classList.toggle("hidden", !!puA);
+    document.getElementById("blind-no-preview-b")?.classList.toggle("hidden", !!puB);
+  } else {
+    document.getElementById("blind-wrap-a")?.classList.add("hidden");
+    document.getElementById("blind-wrap-b")?.classList.add("hidden");
+    document.getElementById("embed-a")?.removeAttribute("src");
+    document.getElementById("embed-b")?.removeAttribute("src");
+    const audioA = document.getElementById("audio-a");
+    const audioB = document.getElementById("audio-b");
+    if (audioA) {
+      audioA.pause();
+      audioA.removeAttribute("src");
+    }
+    if (audioB) {
+      audioB.pause();
+      audioB.removeAttribute("src");
+    }
+    document.getElementById("title-a").textContent = a.name;
+    document.getElementById("meta-a").textContent = [a.artists, a.album].filter(Boolean).join(" · ");
+    document.getElementById("title-b").textContent = b.name;
+    document.getElementById("meta-b").textContent = [b.artists, b.album].filter(Boolean).join(" · ");
+    document.getElementById("card-a")?.setAttribute("aria-label", `Prefer ${a.name}`);
+    document.getElementById("card-b")?.setAttribute("aria-label", `Prefer ${b.name}`);
+    setTrackEmbed("embed-a", "embed-wrap-a", a);
+    setTrackEmbed("embed-b", "embed-wrap-b", b);
+  }
 }
 
 function shuffleInPlace(arr) {
@@ -458,6 +539,10 @@ let rankingAbortRequested = false;
 let rankingSourceLabel = null;
 /** null = full order; number = stop at top N (fewer comparisons). */
 let currentRankingTopN = null;
+/** Blind compare: hide titles and embeds; use preview MP3 only. */
+let currentBlindMode = false;
+/** Snapshot for share link (topN + label); cleared when session ends. */
+let lastShareMeta = null;
 
 function resetPreferenceGraph() {
   preferenceAdj = new Map();
@@ -679,6 +764,7 @@ function buildProgressSnapshot() {
     compareEstimate,
     sourceLabel: rankingSourceLabel || null,
     rankingTopN: currentRankingTopN ?? null,
+    blindMode: !!currentBlindMode,
   };
 }
 
@@ -704,6 +790,8 @@ function applyResumeSnapshot(snap, order) {
     (currentRankingTopN != null
       ? estimateTopNComparisons(order.length, currentRankingTopN)
       : estimateMergeComparisons(order.length));
+  currentBlindMode = snap.blindMode === true;
+  syncExperienceSelect(currentBlindMode);
 }
 
 function isValidProgressSnapshot(o) {
@@ -962,6 +1050,84 @@ function exportRankingToCsv() {
   status.textContent = "Download started.";
 }
 
+function encodeSharePayloadJson(obj) {
+  const json = JSON.stringify(obj);
+  const bytes = new TextEncoder().encode(json);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function buildSharePayloadFromState() {
+  const ranked = window.__lastRanked;
+  if (!ranked?.length) return null;
+  const meta = lastShareMeta || { topN: null, sourceLabel: rankingSourceLabel };
+  let goal = "full";
+  if (meta.topN != null && meta.topN < ranked.length && meta.topN >= 2) {
+    goal = meta.topN === 25 ? "top25" : meta.topN === 100 ? "top100" : `top${meta.topN}`;
+  }
+  return {
+    v: 1,
+    title: String(meta.sourceLabel || "Song ranking").slice(0, 200),
+    createdAt: Date.now(),
+    goal,
+    tracks: ranked.map((t, i) => ({
+      rank: i + 1,
+      name: t.name,
+      artists: t.artists || "",
+      album: t.album || "",
+      url: t.url || "",
+    })),
+  };
+}
+
+async function copyShareLink() {
+  const el = document.getElementById("share-status");
+  const payload = buildSharePayloadFromState();
+  if (!payload) {
+    if (el) el.textContent = "Nothing to share yet.";
+    return;
+  }
+  const enc = encodeSharePayloadJson(payload);
+  const url = `${new URL("viewer.html", window.location.href).href}#d=${enc}`;
+  if (url.length > 48000) {
+    if (el) el.textContent = "This list is too large for a link. Use Download HTML instead.";
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(url);
+    if (el) el.textContent = "Link copied. Anyone can open it — no Spotify login.";
+  } catch {
+    if (el) el.textContent = "Could not copy. Try Download HTML or copy from the address bar.";
+  }
+}
+
+async function downloadShareableStandaloneHtml() {
+  const payload = buildSharePayloadFromState();
+  const el = document.getElementById("share-status");
+  if (!payload) {
+    if (el) el.textContent = "Nothing to share yet.";
+    return;
+  }
+  const safe = JSON.stringify(payload).replace(/</g, "\\u003c");
+  const inject = `<script type="application/json" id="sr-data">${safe}<\/script>\n`;
+  try {
+    const res = await fetch(new URL("viewer.html", window.location.href));
+    if (!res.ok) throw new Error("fetch");
+    let html = await res.text();
+    html = html.replace("<head>", `<head>\n${inject}`);
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `song-rank-share-${Date.now()}.html`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    if (el) el.textContent = "Saved. Open or host the file — works offline.";
+  } catch {
+    if (el) el.textContent = "Could not build file. Serve the app over http(s), not file://.";
+  }
+}
+
 function setDeferButtonVisible(show) {
   document.getElementById("btn-skip-pair")?.classList.toggle("hidden", !show);
   document.getElementById("skip-hint")?.classList.toggle("hidden", !show);
@@ -987,6 +1153,16 @@ function syncRankingModeSelect(topN, trackCount) {
   if (topN === 25) sel.value = "25";
   else if (topN === 100) sel.value = "100";
   else sel.value = "full";
+}
+
+function getExperienceFromUI() {
+  return document.getElementById("compare-experience")?.value === "blind";
+}
+
+function syncExperienceSelect(blind) {
+  const sel = document.getElementById("compare-experience");
+  if (!sel) return;
+  sel.value = blind ? "blind" : "standard";
 }
 
 async function rankWithPartialOrder(tracks, options = {}) {
@@ -1208,6 +1384,7 @@ function loadSavedById(id) {
   const ranked = found.tracks.map((t) => ({ ...t }));
   window.__lastRanked = ranked;
   rankingSourceLabel = found.sourceLabel || guessLabelFromTracks(found.tracks);
+  lastShareMeta = { topN: null, sourceLabel: rankingSourceLabel };
   renderRankedList(ranked);
   applySaveNameSuggestion();
   showComparePanel(false);
@@ -1296,17 +1473,24 @@ async function runRanking(tracks, options = {}) {
   if (!resume && (!tracks || tracks.length === 0)) return;
   if (resume && (!resume.tracks || resume.tracks.length < 2)) return;
 
+  lastShareMeta = null;
   rankingAbortRequested = false;
   let order;
   if (resume) {
     order = resume.tracks.map((t) => ({ ...t }));
     applyResumeSnapshot(resume, order);
     currentRankingOrder = order;
+    if (currentBlindMode && getAccessToken()) {
+      try {
+        await enrichTracksWithPreviews(order);
+      } catch (_) {}
+    }
   } else {
     order = [...tracks];
     shuffleInPlace(order);
     resetPreferenceGraph();
     compareStep = 0;
+    currentBlindMode = options.blindMode !== undefined ? !!options.blindMode : getExperienceFromUI();
     let effTop =
       options.topN !== undefined ? options.topN : getRankingModeFromUI(order.length).topN;
     if (effTop != null) {
@@ -1331,6 +1515,7 @@ async function runRanking(tracks, options = {}) {
 
   try {
     const ranked = await rankWithPartialOrder(order, { topN: currentRankingTopN });
+    lastShareMeta = { topN: currentRankingTopN, sourceLabel: rankingSourceLabel };
     showComparePanel(false);
     showResultsPanel(true);
     window.__lastRanked = ranked;
@@ -1372,6 +1557,7 @@ async function runRanking(tracks, options = {}) {
     currentRankingOrder = null;
     pendingPairForSave = null;
     currentRankingTopN = null;
+    currentBlindMode = false;
   }
 }
 
@@ -1401,6 +1587,7 @@ function backToLanding() {
   if (resultsVisible) {
     rankingSourceLabel = null;
     window.__lastRanked = null;
+    lastShareMeta = null;
     showComparePanel(false);
     showResultsPanel(false);
     document.getElementById("panel-setup")?.classList.remove("hidden");
@@ -1485,7 +1672,59 @@ async function startLogin() {
   window.location.href = auth.toString();
 }
 
+function applyTheme(mode) {
+  const h = document.documentElement;
+  h.classList.remove("theme-dark", "theme-light", "theme-auto");
+  if (mode === "light") h.classList.add("theme-light");
+  else if (mode === "auto") h.classList.add("theme-auto");
+  else h.classList.add("theme-dark");
+}
+
+function initTheme() {
+  const saved = localStorage.getItem(LS_THEME) || "dark";
+  const sel = document.getElementById("theme-select");
+  const v = saved === "light" || saved === "dark" || saved === "auto" ? saved : "dark";
+  if (sel) sel.value = v;
+  applyTheme(v);
+  sel?.addEventListener("change", () => {
+    localStorage.setItem(LS_THEME, sel.value);
+    applyTheme(sel.value);
+  });
+}
+
+function initCompareKeyboard() {
+  document.addEventListener("keydown", (e) => {
+    const comparePanel = document.getElementById("panel-compare");
+    if (!comparePanel || comparePanel.classList.contains("hidden")) return;
+    if (!pendingResolve) return;
+    if (e.target?.closest?.("audio")) return;
+    const tag = e.target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    const k = e.key.toLowerCase();
+    if (k === "u") {
+      document.getElementById("btn-undo")?.click();
+      return;
+    }
+    if (k === "s") {
+      document.getElementById("btn-skip-pair")?.click();
+      return;
+    }
+    let choice = null;
+    if (k === "1" || e.key === "ArrowLeft") choice = -1;
+    else if (k === "2" || e.key === "ArrowRight") choice = 1;
+    else return;
+    e.preventDefault();
+    const pr = pendingResolve;
+    if (!pr) return;
+    pendingResolve = null;
+    pr(choice);
+  });
+}
+
 function init() {
+  initTheme();
+  initCompareKeyboard();
   renderSavedRankingsList();
   refreshProgressPicker();
   setRedirectDisplay();
@@ -1566,6 +1805,8 @@ function init() {
         status.classList.add("error");
         return;
       }
+      status.textContent = "Loading previews…";
+      await enrichTracksWithPreviews(tracks);
       status.textContent = `Loaded ${tracks.length} tracks.`;
       const label = await fetchSpotifySourceLabel(parsed);
       await runRanking(tracks, { sourceLabel: label });
@@ -1661,6 +1902,13 @@ function init() {
   document.getElementById("btn-export-json")?.addEventListener("click", exportRankingToJson);
   document.getElementById("btn-export-csv")?.addEventListener("click", exportRankingToCsv);
 
+  document.getElementById("btn-share-copy-link")?.addEventListener("click", () => {
+    copyShareLink().catch(() => {});
+  });
+  document.getElementById("btn-share-download-page")?.addEventListener("click", () => {
+    downloadShareableStandaloneHtml().catch(() => {});
+  });
+
   document.getElementById("btn-restart")?.addEventListener("click", () => {
     const ranked = window.__lastRanked;
     if (!ranked?.length) return;
@@ -1680,6 +1928,7 @@ function init() {
 
   document.getElementById("btn-new")?.addEventListener("click", () => {
     window.__lastRanked = null;
+    lastShareMeta = null;
     rankingSourceLabel = null;
     showComparePanel(false);
     showResultsPanel(false);

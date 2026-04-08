@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="theme-dark">
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Cache-Control" content="no-cache" />
@@ -18,16 +18,31 @@
   </script>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Song ranker</title>
-  <link rel="stylesheet" href="styles.css?v=25" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=26" />
 </head>
 <body>
   <div class="app">
     <header class="header">
-      <h1>Song ranker</h1>
-      <p class="tagline">Pairwise sort for Spotify playlists & albums.</p>
+      <div class="header-row">
+        <div class="header-brand">
+          <h1>Song ranker</h1>
+          <p class="tagline">Pairwise sort for Spotify playlists & albums — pick favorites, get a clean list.</p>
+        </div>
+        <div class="header-tools">
+          <label class="visually-hidden" for="theme-select">Theme</label>
+          <select id="theme-select" class="select-input select-toolbar" aria-label="Color theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+            <option value="auto">System</option>
+          </select>
+        </div>
+      </div>
     </header>
 
-    <section id="panel-setup" class="panel">
+    <section id="panel-setup" class="panel panel-elevated">
       <h2>1. Sign in</h2>
       <p id="hint-connect" class="hint">
         Redirect URI for your app: <code id="redirect-uri-display"></code> — add it in the
@@ -49,23 +64,37 @@
       <p id="user-display" class="user-display hidden" role="status" aria-live="polite"></p>
       <p id="auth-status" class="status"></p>
 
-      <h2>2. Load</h2>
-      <p class="hint">Playlist, artist, or album link — or a preset below.</p>
-      <div class="row row-tight">
-        <label for="ranking-mode">Goal</label>
-        <select id="ranking-mode" class="select-input">
-          <option value="full">Complete ranking (all songs)</option>
-          <option value="25">Top 25 only (fewer comparisons)</option>
-          <option value="100">Top 100 only (fewer comparisons)</option>
-        </select>
+      <h2>2. Load &amp; options</h2>
+      <p class="hint">Paste a playlist, artist, or album link — or use a preset.</p>
+
+      <div class="options-grid">
+        <div class="row row-tight">
+          <label for="ranking-mode">Ranking goal</label>
+          <select id="ranking-mode" class="select-input">
+            <option value="full">Complete ranking (all songs)</option>
+            <option value="25">Top 25 only (fewer comparisons)</option>
+            <option value="100">Top 100 only (fewer comparisons)</option>
+          </select>
+        </div>
+        <div class="row row-tight">
+          <label for="compare-experience">Experience</label>
+          <select id="compare-experience" class="select-input">
+            <option value="standard">Standard — see song names &amp; Spotify previews</option>
+            <option value="blind">Blind test — 30s audio only, names hidden until results</option>
+          </select>
+        </div>
       </div>
+      <p class="hint hint-tight blind-hint">
+        Blind mode hides titles and embeds so you judge by sound. Tracks without a Spotify preview show a short notice — you can still pick a side.
+      </p>
+
       <div id="preset-buttons" class="preset-buttons"></div>
       <div class="row row-tight">
-        <label for="spotify-url">URL</label>
+        <label for="spotify-url">Spotify URL</label>
         <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/…" />
       </div>
       <div class="actions actions-tight">
-        <button type="button" id="btn-load" class="btn primary" disabled>Load</button>
+        <button type="button" id="btn-load" class="btn primary" disabled>Load &amp; start ranking</button>
       </div>
       <p id="load-status" class="status"></p>
 
@@ -106,7 +135,7 @@
       </details>
     </section>
 
-    <section id="panel-compare" class="panel hidden">
+    <section id="panel-compare" class="panel panel-elevated panel-compare hidden">
       <div class="panel-nav">
         <button type="button" id="btn-back-home-compare" class="btn secondary btn-sm">← Home</button>
       </div>
@@ -114,6 +143,9 @@
         <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
         <p id="progress-text" class="progress-text"></p>
       </div>
+      <p class="kb-hint hint small" id="compare-kb-hint" aria-hidden="true">
+        <span class="kbd">1</span> left · <span class="kbd">2</span> right · <span class="kbd">U</span> undo · <span class="kbd">S</span> skip
+      </p>
       <div class="duel">
         <div class="song-column">
           <div class="embed-wrap hidden" id="embed-wrap-a">
@@ -125,6 +157,13 @@
               height="152"
               allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
             ></iframe>
+          </div>
+          <div class="blind-audio-wrap hidden" id="blind-wrap-a">
+            <div class="blind-audio-inner">
+              <span class="blind-badge" aria-hidden="true">A</span>
+              <audio id="audio-a" class="blind-audio-el" controls playsinline preload="metadata" crossorigin="anonymous"></audio>
+              <p class="blind-no-preview hidden" id="blind-no-preview-a">No 30s preview from Spotify.</p>
+            </div>
           </div>
           <button type="button" class="song-card" id="card-a" aria-label="Prefer song A">
             <span class="song-title" id="title-a"></span>
@@ -143,6 +182,13 @@
               allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
             ></iframe>
           </div>
+          <div class="blind-audio-wrap hidden" id="blind-wrap-b">
+            <div class="blind-audio-inner">
+              <span class="blind-badge" aria-hidden="true">B</span>
+              <audio id="audio-b" class="blind-audio-el" controls playsinline preload="metadata" crossorigin="anonymous"></audio>
+              <p class="blind-no-preview hidden" id="blind-no-preview-b">No 30s preview from Spotify.</p>
+            </div>
+          </div>
           <button type="button" class="song-card" id="card-b" aria-label="Prefer song B">
             <span class="song-title" id="title-b"></span>
             <span class="song-meta" id="meta-b"></span>
@@ -151,7 +197,7 @@
       </div>
       <div class="skip-pair">
         <div class="compare-extras">
-          <button type="button" id="btn-undo" class="btn secondary btn-sm" disabled>Undo</button>
+          <button type="button" id="btn-undo" class="btn secondary btn-sm">Undo</button>
           <button type="button" id="btn-skip-pair" class="btn secondary btn-sm">Skip</button>
         </div>
         <p class="hint small" id="skip-hint">Defer to compare other pairs first. Last matchup needs a pick.</p>
@@ -163,13 +209,24 @@
       <p class="hint small compare-hint">Auto-saved each round.</p>
     </section>
 
-    <section id="panel-results" class="panel hidden">
+    <section id="panel-results" class="panel panel-elevated hidden">
       <div class="panel-nav">
         <button type="button" id="btn-back-home-results" class="btn secondary btn-sm">← Home</button>
       </div>
       <h2>Results</h2>
       <p id="results-mode-hint" class="hint hint-tight hidden" role="status"></p>
       <ol id="ranked-list" class="ranked-list"></ol>
+
+      <div class="share-card">
+        <h3 class="share-heading">Share read-only list</h3>
+        <p class="hint share-lead">No login required for viewers. Best for lists under ~500 songs (link length limits).</p>
+        <div class="share-actions">
+          <button type="button" id="btn-share-copy-link" class="btn primary btn-sm">Copy link</button>
+          <button type="button" id="btn-share-download-page" class="btn secondary btn-sm">Download HTML</button>
+        </div>
+        <p id="share-status" class="status status-tight" role="status"></p>
+      </div>
+
       <div class="row row-tight">
         <label for="save-name">Save as</label>
         <input id="save-name" type="text" autocomplete="off" placeholder="Prefilled from source" />
@@ -185,7 +242,7 @@
       <p id="copy-status" class="status status-tight"></p>
     </section>
   </div>
-  <script src="config.js?v=25"></script>
-  <script src="app.js?v=25" defer></script>
+  <script src="config.js?v=26"></script>
+  <script src="app.js?v=26" defer></script>
 </body>
 </html>
