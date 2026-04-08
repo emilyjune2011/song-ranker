@@ -613,6 +613,103 @@ function extractRankingSubset(subsetTracks) {
   return ranked;
 }
 
+/**
+ * One valid linear extension of the partial order: when multiple tracks are tied
+ * (no path between them), prefer lower index in `idToOrderIndex` (session order).
+ */
+function stableTopologicalSort(tracks, idToOrderIndex) {
+  const ids = new Set(tracks.map((t) => t.id));
+  const idx =
+    idToOrderIndex && typeof idToOrderIndex.get === "function"
+      ? idToOrderIndex
+      : new Map(tracks.map((t, i) => [t.id, i]));
+  const indeg = new Map();
+  for (const t of tracks) indeg.set(t.id, 0);
+  for (const t of tracks) {
+    for (const l of preferenceAdj.get(t.id) || []) {
+      if (ids.has(l)) indeg.set(l, (indeg.get(l) || 0) + 1);
+    }
+  }
+  const byId = new Map(tracks.map((t) => [t.id, t]));
+  const q = [];
+  for (const t of tracks) {
+    if ((indeg.get(t.id) || 0) === 0) q.push(t.id);
+  }
+  q.sort((a, b) => (idx.get(a) ?? 0) - (idx.get(b) ?? 0));
+  const ranked = [];
+  while (q.length) {
+    const id = q.shift();
+    ranked.push(byId.get(id));
+    for (const l of preferenceAdj.get(id) || []) {
+      if (!ids.has(l)) continue;
+      indeg.set(l, indeg.get(l) - 1);
+      if (indeg.get(l) === 0) {
+        q.push(l);
+        q.sort((a, b) => (idx.get(a) ?? 0) - (idx.get(b) ?? 0));
+      }
+    }
+  }
+  if (ranked.length !== tracks.length) return null;
+  return ranked;
+}
+
+function getRankingPreviewData(tracks, topN) {
+  if (!tracks?.length) return null;
+  const idxMap = new Map(tracks.map((t, i) => [t.id, i]));
+  let effTop = topN;
+  if (effTop != null) {
+    effTop = Math.min(Math.floor(effTop), tracks.length);
+    if (effTop < 2 || effTop >= tracks.length) effTop = null;
+  }
+  if (effTop != null) {
+    const active = getActiveTracksForTopN(tracks, effTop);
+    if (active.length === 0) {
+      return { error: "Nothing in contention for the top yet — keep comparing." };
+    }
+    const sorted = stableTopologicalSort(active, idxMap);
+    if (!sorted) return { error: "Could not build a preview yet." };
+    return {
+      rows: sorted.slice(0, effTop),
+      hint: `Provisional top ${effTop} (of ${tracks.length}). Ties use shuffle order; still subject to change.`,
+    };
+  }
+  const sorted = stableTopologicalSort(tracks, idxMap);
+  if (!sorted) return { error: "Could not build a preview yet." };
+  return {
+    rows: sorted,
+    hint: "Provisional full order. Ties use shuffle order; still subject to change.",
+  };
+}
+
+function renderRankingPreview() {
+  const ol = document.getElementById("preview-ranked-list");
+  const hintEl = document.getElementById("preview-hint");
+  if (!ol) return;
+  if (!currentRankingOrder?.length) {
+    ol.innerHTML = "";
+    if (hintEl) hintEl.textContent = "";
+    return;
+  }
+  const data = getRankingPreviewData(currentRankingOrder, currentRankingTopN);
+  if (!data) {
+    ol.innerHTML = "";
+    if (hintEl) hintEl.textContent = "";
+    return;
+  }
+  if (data.error) {
+    ol.innerHTML = "";
+    if (hintEl) hintEl.textContent = data.error;
+    return;
+  }
+  if (hintEl) hintEl.textContent = data.hint;
+  ol.innerHTML = "";
+  data.rows.forEach((t, i) => {
+    const li = document.createElement("li");
+    li.textContent = `${i + 1}. ${t.name}${t.artists ? ` — ${t.artists}` : ""}`;
+    ol.appendChild(li);
+  });
+}
+
 /** Active session order (for save / resume); null when not ranking. */
 let currentRankingOrder = null;
 /** Current head-to-head on screen [idA, idB] while waiting for an answer. */
@@ -1065,6 +1162,7 @@ async function rankWithPartialOrder(tracks, options = {}) {
       pushChoice(b.id, a.id, a, b);
     }
     scheduleProgressAutosave();
+    renderRankingPreview();
   }
 }
 
@@ -1288,6 +1386,7 @@ function wireCompareCards() {
     pendingResolve = null;
     r(CMP_UNDO);
     scheduleProgressAutosave();
+    renderRankingPreview();
   });
 }
 
@@ -1328,6 +1427,7 @@ async function runRanking(tracks, options = {}) {
   updateProgress();
   showComparePanel(true);
   showResultsPanel(false);
+  renderRankingPreview();
 
   try {
     const ranked = await rankWithPartialOrder(order, { topN: currentRankingTopN });
@@ -1372,6 +1472,7 @@ async function runRanking(tracks, options = {}) {
     currentRankingOrder = null;
     pendingPairForSave = null;
     currentRankingTopN = null;
+    renderRankingPreview();
   }
 }
 
