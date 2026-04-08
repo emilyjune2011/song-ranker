@@ -1885,7 +1885,19 @@ function initCompareKeyboard() {
   });
 }
 
+/** Optional gitignored config.js (e.g. Supabase). Missing file is normal on static hosts. */
+function loadOptionalConfigScript() {
+  return new Promise((resolve) => {
+    const s = document.createElement("script");
+    s.src = "config.js?v=29";
+    s.onload = () => resolve();
+    s.onerror = () => resolve();
+    document.head.appendChild(s);
+  });
+}
+
 async function init() {
+  await loadOptionalConfigScript();
   initTheme();
   initCompareKeyboard();
   renderSavedRankingsList();
