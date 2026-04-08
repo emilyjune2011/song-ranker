@@ -160,50 +160,63 @@ function spotifyApiErrorMessage(body) {
   return "";
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function api(pathOrUrl, options = {}) {
   const token = getAccessToken();
   if (!token) throw new Error("Not signed in.");
   const url = pathOrUrl.startsWith("http")
     ? pathOrUrl
     : `https://api.spotify.com/v1${pathOrUrl}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      Authorization: `Bearer ${token}`,
-      ...(options.headers || {}),
-    },
-  });
-  if (res.status === 401) {
-    clearAuth();
-    throw new Error("Session expired. Sign in again.");
-  }
-  if (res.status === 429) {
-    const retry = res.headers.get("Retry-After");
-    throw new Error(`Rate limited. Try again in ${retry || "a few"} seconds.`);
-  }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const detail = spotifyApiErrorMessage(err) || `${res.status} ${res.statusText}`;
-    if (res.status === 403) {
-      const lower = detail.toLowerCase();
-      const scopeOrPerm =
-        lower.includes("scope") ||
-        lower.includes("permission") ||
-        lower.includes("not authorized") ||
-        lower.includes("insufficient");
-      if (scopeOrPerm) {
-        clearAuth();
+  const maxAttempts = 6;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(url, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(options.headers || {}),
+      },
+    });
+    if (res.status === 401) {
+      clearAuth();
+      throw new Error("Session expired. Sign in again.");
+    }
+    if (res.status === 429) {
+      const raw = res.headers.get("Retry-After");
+      const sec = Math.min(120, Math.max(1, parseInt(raw || "2", 10) || 2));
+      if (attempt < maxAttempts - 1) {
+        await sleep(sec * 1000 + Math.floor(Math.random() * 400));
+        continue;
+      }
+      throw new Error(`Rate limited. Try again in ${raw || "a minute"} or load a smaller playlist.`);
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const detail = spotifyApiErrorMessage(err) || `${res.status} ${res.statusText}`;
+      if (res.status === 403) {
+        const lower = detail.toLowerCase();
+        const scopeOrPerm =
+          lower.includes("scope") ||
+          lower.includes("permission") ||
+          lower.includes("not authorized") ||
+          lower.includes("insufficient");
+        if (scopeOrPerm) {
+          clearAuth();
+          throw new Error(
+            `${detail} Sign in again so Spotify can grant playlist access (your previous login may have been created before those permissions were added).`
+          );
+        }
         throw new Error(
-          `${detail} Sign in again so Spotify can grant playlist access (your previous login may have been created before those permissions were added).`
+          `${detail} If you’re on this app’s User list in the Spotify dashboard, try signing out and signing in again. Also confirm this site uses the same Client ID as that Spotify app (Developer setup).`
         );
       }
-      throw new Error(
-        `${detail} If you’re on this app’s User list in the Spotify dashboard, try signing out and signing in again. Also confirm this site uses the same Client ID as that Spotify app (Developer setup).`
-      );
+      throw new Error(detail);
     }
-    throw new Error(detail);
+    return res.json();
   }
-  return res.json();
+  throw new Error("Spotify API: too many retries.");
 }
 
 /** Human-readable label for default save names (playlist / artist / album title). */
@@ -278,6 +291,7 @@ async function fetchAllPlaylistTracks(playlistId) {
     offset += items.length;
     if (data.total != null && offset >= data.total) break;
     if (items.length < pageLimit) break;
+    await sleep(90);
   }
   return dedupeById(out);
 }
@@ -308,6 +322,7 @@ async function fetchAlbumTracks(albumId) {
     offset += items.length;
     if (data.total != null && offset >= data.total) break;
     if (items.length < pageLimit) break;
+    await sleep(90);
   }
   return dedupeById(out);
 }
@@ -330,11 +345,13 @@ async function fetchArtistTracks(artistId) {
     albumOffset += items.length;
     if (data.total != null && albumOffset >= data.total) break;
     if (items.length < albumPageLimit) break;
+    await sleep(90);
   }
 
   const out = [];
   const trackPageLimit = 50;
   for (const albumId of albums) {
+    await sleep(100);
     let trackOffset = 0;
     for (;;) {
       const data = await api(
@@ -357,6 +374,7 @@ async function fetchArtistTracks(artistId) {
       trackOffset += items.length;
       if (data.total != null && trackOffset >= data.total) break;
       if (items.length < trackPageLimit) break;
+      await sleep(70);
     }
   }
   return dedupeById(out);
@@ -399,6 +417,7 @@ async function enrichTracksWithPreviews(tracks) {
   const unique = [...new Set(ids)];
   const chunk = 50;
   for (let i = 0; i < unique.length; i += chunk) {
+    if (i > 0) await sleep(100);
     const slice = unique.slice(i, i + chunk);
     const data = await api(`/tracks?ids=${slice.map(encodeURIComponent).join(",")}`);
     const byId = new Map((data.tracks || []).filter(Boolean).map((tr) => [tr.id, tr]));
