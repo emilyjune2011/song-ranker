@@ -681,15 +681,27 @@ function getRankingPreviewData(tracks, topN) {
   };
 }
 
+/** Show live preview only after this many head-to-head picks (not skips). */
+const PREVIEW_MIN_SELECTIONS = 50;
+
 function renderRankingPreview() {
+  const wrap = document.getElementById("compare-preview-wrap");
   const ol = document.getElementById("preview-ranked-list");
   const hintEl = document.getElementById("preview-hint");
   if (!ol) return;
   if (!currentRankingOrder?.length) {
     ol.innerHTML = "";
     if (hintEl) hintEl.textContent = "";
+    wrap?.classList.add("hidden");
     return;
   }
+  if (compareStep < PREVIEW_MIN_SELECTIONS) {
+    ol.innerHTML = "";
+    if (hintEl) hintEl.textContent = "";
+    wrap?.classList.add("hidden");
+    return;
+  }
+  wrap?.classList.remove("hidden");
   const data = getRankingPreviewData(currentRankingOrder, currentRankingTopN);
   if (!data) {
     ol.innerHTML = "";

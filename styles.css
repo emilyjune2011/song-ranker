@@ -439,8 +439,12 @@ select.select-input {
   color: var(--muted);
 }
 
+.compare-preview-wrap {
+  margin-top: 0.75rem;
+}
+
 .compare-preview-details {
-  margin: 0.5rem 0 0.65rem;
+  margin: 0;
 }
 
 .preview-ranked-list {
