@@ -87,6 +87,7 @@ function clearAuth() {
   sessionStorage.removeItem(SS_EXPIRES);
   const loadBtn = document.getElementById("btn-load");
   if (loadBtn) loadBtn.disabled = true;
+  updateSpotifySignOutVisibility();
   void refreshSpotifyUserDisplay();
 }
 
@@ -210,12 +211,13 @@ async function fetchAllPlaylistTracks(playlistId) {
   let offset = 0;
   for (;;) {
     const data = await api(
-      `/playlists/${encodeURIComponent(playlistId)}/tracks?limit=${pageLimit}&offset=${offset}`
+      `/playlists/${encodeURIComponent(playlistId)}/items?limit=${pageLimit}&offset=${offset}`
     );
     const items = data.items || [];
     for (const item of items) {
       const t = item.track;
       if (!t || !t.id) continue;
+      if (t.type === "episode") continue;
       out.push(normalizeTrack(t));
     }
     if (!items.length) break;
@@ -1760,9 +1762,22 @@ async function handleAuthReturn() {
     const data = await exchangeCodeForToken(code, verifier, clientId);
     setAccessToken(data.access_token, data.expires_in);
     sessionStorage.removeItem(SS_VERIFIER);
-    document.getElementById("auth-status").classList.remove("error");
-    document.getElementById("btn-load").disabled = false;
+    const granted = new Set((data.scope || "").split(/\s+/).filter(Boolean));
+    const loadBtn = document.getElementById("btn-load");
+    if (!granted.has("playlist-read-private")) {
+      const authEl = document.getElementById("auth-status");
+      if (authEl) {
+        authEl.textContent =
+          "Spotify did not grant playlist access. In the Spotify Developer Dashboard, open your app → Settings and ensure playlist scopes are enabled, then use Sign out and sign in again.";
+        authEl.classList.add("error");
+      }
+      if (loadBtn) loadBtn.disabled = true;
+    } else {
+      document.getElementById("auth-status").classList.remove("error");
+      if (loadBtn) loadBtn.disabled = false;
+    }
     await refreshSpotifyUserDisplay();
+    updateSpotifySignOutVisibility();
   } catch (e) {
     document.getElementById("auth-status").textContent = e.message || String(e);
     document.getElementById("auth-status").classList.add("error");
@@ -1789,6 +1804,21 @@ async function startLogin() {
   auth.searchParams.set("code_challenge", challenge);
 
   window.location.href = auth.toString();
+}
+
+function updateSpotifySignOutVisibility() {
+  const btn = document.getElementById("btn-logout-spotify");
+  if (!btn) return;
+  btn.classList.toggle("hidden", !getAccessToken());
+}
+
+function signOutSpotify() {
+  clearAuth();
+  const authEl = document.getElementById("auth-status");
+  if (authEl) {
+    authEl.textContent = "Signed out. Sign in again to continue.";
+    authEl.classList.remove("error");
+  }
 }
 
 function applyTheme(mode) {
@@ -1891,6 +1921,9 @@ async function init() {
     document.getElementById("btn-load").disabled = false;
     refreshSpotifyUserDisplay().catch(() => {});
   }
+  updateSpotifySignOutVisibility();
+
+  document.getElementById("btn-logout-spotify")?.addEventListener("click", signOutSpotify);
 
   handleAuthReturn().catch(() => {});
 
