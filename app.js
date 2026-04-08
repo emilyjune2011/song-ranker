@@ -85,6 +85,8 @@ function setAccessToken(token, expiresInSec) {
 function clearAuth() {
   sessionStorage.removeItem(SS_TOKEN);
   sessionStorage.removeItem(SS_EXPIRES);
+  const loadBtn = document.getElementById("btn-load");
+  if (loadBtn) loadBtn.disabled = true;
   void refreshSpotifyUserDisplay();
 }
 
@@ -93,6 +95,14 @@ function parseSpotifyInput(input) {
   const m = s.match(/spotify\.com\/(?:intl-[a-z]{2}\/)?(playlist|artist|album|track)\/([a-zA-Z0-9]+)/);
   if (!m) return null;
   return { type: m[1], id: m[2] };
+}
+
+function spotifyApiErrorMessage(body) {
+  if (!body || typeof body !== "object") return "";
+  const e = body.error;
+  if (typeof e === "string") return e;
+  if (e && typeof e === "object" && typeof e.message === "string") return e.message;
+  return "";
 }
 
 async function api(pathOrUrl, options = {}) {
@@ -118,12 +128,25 @@ async function api(pathOrUrl, options = {}) {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
+    const detail = spotifyApiErrorMessage(err) || `${res.status} ${res.statusText}`;
     if (res.status === 403) {
+      const lower = detail.toLowerCase();
+      const scopeOrPerm =
+        lower.includes("scope") ||
+        lower.includes("permission") ||
+        lower.includes("not authorized") ||
+        lower.includes("insufficient");
+      if (scopeOrPerm) {
+        clearAuth();
+        throw new Error(
+          `${detail} Sign in again so Spotify can grant playlist access (your previous login may have been created before those permissions were added).`
+        );
+      }
       throw new Error(
-        "Spotify returned 403 (forbidden). New Spotify apps are usually in Development mode: only accounts added under User management in your app’s settings can sign in or use the API. Add your friend’s Spotify email there, or request Extended Quota for a public app — see developer.spotify.com/dashboard."
+        `${detail} If you’re on this app’s User list in the Spotify dashboard, try signing out and signing in again. Also confirm this site uses the same Client ID as that Spotify app (Developer setup).`
       );
     }
-    throw new Error(err.error?.message || `${res.status} ${res.statusText}`);
+    throw new Error(detail);
   }
   return res.json();
 }
