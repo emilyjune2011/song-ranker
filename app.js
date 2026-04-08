@@ -380,19 +380,6 @@ async function fetchArtistTracks(artistId) {
   return dedupeById(out);
 }
 
-/**
- * One API call — Spotify’s top tracks for the artist (up to 10). Used for Quick start presets
- * so we don’t hammer the API with hundreds of album/track requests (rate limits).
- * Paste an artist URL and Start ranking to load the full catalog via fetchArtistTracks instead.
- */
-async function fetchArtistTopTracks(artistId) {
-  const data = await api(
-    `/artists/${encodeURIComponent(artistId)}/top-tracks?market=from_token`
-  );
-  const tracks = (data.tracks || []).map(normalizeTrack);
-  return dedupeById(tracks);
-}
-
 function normalizeTrack(t) {
   const artists = (t.artists || []).map((a) => a.name).join(", ");
   return {
@@ -451,7 +438,7 @@ async function startRankingFromPreset(preset) {
   const status = document.getElementById("load-status");
   status.textContent = "Loading…";
   try {
-    const tracks = await fetchArtistTopTracks(preset.id);
+    const tracks = await fetchArtistTracks(preset.id);
     if (tracks.length < 2) {
       status.textContent = "Need at least two tracks to rank.";
       status.classList.add("error");
