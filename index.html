@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=30" />
+  <link rel="stylesheet" href="styles.css?v=31" />
 </head>
 <body>
   <div class="app">
@@ -89,19 +89,26 @@
       </div>
 
       <h2>3. Load</h2>
-      <div class="preset-block">
-        <div class="preset-block-head">
-          <span class="preset-block-title">Quick start</span>
-          <span class="preset-block-badge">Presets</span>
+      <div class="load-layout">
+        <div class="load-preset-col">
+          <div class="preset-block">
+            <div class="preset-block-head">
+              <span class="preset-block-title">Quick start</span>
+              <span class="preset-block-badge">Presets</span>
+            </div>
+            <div id="preset-buttons" class="preset-buttons"></div>
+          </div>
         </div>
-        <div id="preset-buttons" class="preset-buttons"></div>
+        <div class="load-url-col">
+          <p class="load-url-lead">Or, load a playlist, artist, or album</p>
+          <div class="field field-tight field-load-link">
+            <label class="field-label" for="spotify-url">Spotify link</label>
+            <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/…" autocomplete="off" />
+          </div>
+        </div>
       </div>
-      <div class="field field-tight">
-        <label class="field-label" for="spotify-url">Spotify URL</label>
-        <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/…" />
-      </div>
-      <div class="actions actions-tight">
-        <button type="button" id="btn-load" class="btn primary" disabled>Load &amp; start ranking</button>
+      <div class="actions actions-tight load-actions">
+        <button type="button" id="btn-load" class="btn primary btn-load-start" disabled>Start ranking</button>
       </div>
       <p id="load-status" class="status"></p>
 

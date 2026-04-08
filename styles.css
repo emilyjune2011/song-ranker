@@ -304,6 +304,68 @@ html.theme-auto .field-option-card {
   border-color: var(--border);
 }
 
+.load-layout {
+  display: grid;
+  gap: 1rem 1.25rem;
+  margin: 0.35rem 0 0.75rem;
+  align-items: stretch;
+}
+
+@media (min-width: 640px) {
+  .load-layout {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.load-preset-col .preset-block {
+  margin: 0;
+  height: 100%;
+}
+
+.load-url-col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.9rem 1rem 1rem;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--border) 92%, transparent);
+  background: var(--bg-elevated);
+}
+
+html.theme-light .load-url-col,
+html.theme-auto .load-url-col {
+  border-color: var(--border);
+}
+
+.load-url-lead {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  line-height: 1.35;
+}
+
+.field-load-link {
+  margin-bottom: 0;
+}
+
+.load-actions {
+  margin-top: 0.15rem;
+  margin-bottom: 0.25rem;
+}
+
+.load-actions .btn-load-start {
+  width: 100%;
+}
+
+@media (min-width: 560px) {
+  .load-actions .btn-load-start {
+    width: auto;
+    min-width: 12rem;
+  }
+}
+
 .preset-block {
   margin: 0.35rem 0 1rem;
   padding: 0.9rem 1rem 1rem;
