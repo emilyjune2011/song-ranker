@@ -1323,7 +1323,7 @@ function getLocalSyncPayload() {
 }
 
 function applyCloudPayload(obj) {
-  if (!obj || obj.v !== 1) throw new Error("Unsupported or missing cloud data.");
+  if (!obj || obj.v !== 1) throw new Error("That online backup isn’t valid.");
   localStorage.setItem(LS_SAVED_RANKINGS, JSON.stringify(Array.isArray(obj.savedRankings) ? obj.savedRankings : []));
   localStorage.setItem(LS_PROGRESS_NAMED, JSON.stringify(Array.isArray(obj.namedProgress) ? obj.namedProgress : []));
   if (obj.autosave && typeof obj.autosave === "string") {
@@ -1338,6 +1338,7 @@ function applyCloudPayload(obj) {
 async function initCloudSync() {
   const url = (typeof window.SONG_RANKER_SUPABASE_URL === "string" ? window.SONG_RANKER_SUPABASE_URL : "").trim();
   const key = (typeof window.SONG_RANKER_SUPABASE_ANON_KEY === "string" ? window.SONG_RANKER_SUPABASE_ANON_KEY : "").trim();
+  const cloudPanel = document.getElementById("cloud-panel");
   const statusEl = document.getElementById("cloud-status");
   const syncBtn = document.getElementById("btn-cloud-sync");
   const restoreBtn = document.getElementById("btn-cloud-restore");
@@ -1355,12 +1356,13 @@ async function initCloudSync() {
   };
 
   if (!url || !key) {
-    disableCloud("Add your Supabase project URL and anon key in config.js to use cloud sync.");
     return;
   }
 
+  if (cloudPanel) cloudPanel.classList.remove("hidden");
+
   if (window.location.protocol === "file:") {
-    disableCloud("Cloud sync needs HTTP hosting (not file://).");
+    disableCloud("Save online works when this site is opened in the browser (not as a downloaded file).");
     return;
   }
 
@@ -1370,7 +1372,8 @@ async function initCloudSync() {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
     });
   } catch (e) {
-    disableCloud(`Could not load Supabase: ${e.message || e}`);
+    disableCloud("Couldn’t load online backup. Try again later.");
+    console.warn(e);
     return;
   }
 
@@ -1379,18 +1382,17 @@ async function initCloudSync() {
     if (!session) {
       const { error } = await supabaseClient.auth.signInAnonymously();
       if (error) {
-        setStatus(
-          `${error.message} Enable Anonymous sign-ins under Authentication → Providers in Supabase if needed.`,
-          true
-        );
+        setStatus("Online backup isn’t available right now. Try again later.", true);
+        console.warn(error);
         if (syncBtn) syncBtn.disabled = true;
         if (restoreBtn) restoreBtn.disabled = true;
         return;
       }
     }
-    setStatus("Cloud ready — sync uploads your saved lists and in-progress sessions.");
+    setStatus("Your saves can be stored online so you can get them back on another device.");
   } catch (e) {
-    setStatus(e.message || String(e), true);
+    setStatus("Online backup isn’t available right now. Try again later.", true);
+    console.warn(e);
     if (syncBtn) syncBtn.disabled = true;
     if (restoreBtn) restoreBtn.disabled = true;
     return;
@@ -1419,7 +1421,7 @@ async function initCloudSync() {
         ({ data: { session } } = await supabaseClient.auth.getSession());
       }
       const uid = session?.user?.id;
-      if (!uid) throw new Error("Not signed in to cloud.");
+      if (!uid) throw new Error("Not signed in.");
       const payload = getLocalSyncPayload();
       const { error } = await supabaseClient.from("song_ranker_sync").upsert(
         {
@@ -1431,7 +1433,7 @@ async function initCloudSync() {
       );
       if (error) throw error;
       if (st) {
-        st.textContent = "Synced to cloud.";
+        st.textContent = "Saved online.";
         st.classList.remove("error");
       }
     } catch (e) {
@@ -1445,7 +1447,7 @@ async function initCloudSync() {
   wireOnce(restoreBtn, async () => {
     const st = document.getElementById("cloud-status");
     try {
-      if (!confirm("Replace this device’s saved lists and sessions with the cloud copy?")) return;
+      if (!confirm("Replace this device’s saved lists and sessions with your online copy?")) return;
       if (st) {
         st.textContent = "Downloading…";
         st.classList.remove("error");
@@ -1456,13 +1458,13 @@ async function initCloudSync() {
         if (error) throw error;
         ({ data: { session } } = await supabaseClient.auth.getSession());
       }
-      if (!session?.user?.id) throw new Error("Not signed in to cloud.");
+      if (!session?.user?.id) throw new Error("Not signed in.");
       const { data, error } = await supabaseClient.from("song_ranker_sync").select("data").maybeSingle();
       if (error) throw error;
-      if (!data?.data) throw new Error("Nothing in cloud yet.");
+      if (!data?.data) throw new Error("Nothing saved online yet.");
       applyCloudPayload(data.data);
       if (st) {
-        st.textContent = "Restored from cloud.";
+        st.textContent = "Restored from online backup.";
         st.classList.remove("error");
       }
     } catch (e) {
@@ -1885,7 +1887,7 @@ function initCompareKeyboard() {
   });
 }
 
-/** Optional gitignored config.js (e.g. Supabase). Missing file is normal on static hosts. */
+/** Optional gitignored config.js for online backup keys. Missing file is normal on static hosts. */
 function loadOptionalConfigScript() {
   return new Promise((resolve) => {
     const s = document.createElement("script");

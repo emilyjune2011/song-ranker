@@ -378,7 +378,7 @@ html.theme-auto .preset-buttons .btn-preset {
 .cloud-panel-head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 0.5rem;
   margin-bottom: 0.4rem;
 }
@@ -387,14 +387,6 @@ html.theme-auto .preset-buttons .btn-preset {
   font-size: 1.02rem;
   font-weight: 700;
   letter-spacing: -0.02em;
-}
-
-.cloud-panel-via {
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
 }
 
 .cloud-status {

@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=29" />
+  <link rel="stylesheet" href="styles.css?v=30" />
 </head>
 <body>
   <div class="app">
@@ -69,24 +69,7 @@
         </div>
       </details>
 
-      <h2>2. Load</h2>
-      <div class="preset-block">
-        <div class="preset-block-head">
-          <span class="preset-block-title">Quick start</span>
-          <span class="preset-block-badge">Presets</span>
-        </div>
-        <div id="preset-buttons" class="preset-buttons"></div>
-      </div>
-      <div class="field field-tight">
-        <label class="field-label" for="spotify-url">Spotify URL</label>
-        <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/…" />
-      </div>
-      <div class="actions actions-tight">
-        <button type="button" id="btn-load" class="btn primary" disabled>Load &amp; start ranking</button>
-      </div>
-      <p id="load-status" class="status"></p>
-
-      <h2>3. Options</h2>
+      <h2>2. Options</h2>
       <div class="options-grid">
         <div class="field field-option-card">
           <label class="field-label" for="ranking-mode">Ranking goal</label>
@@ -105,17 +88,33 @@
         </div>
       </div>
 
+      <h2>3. Load</h2>
+      <div class="preset-block">
+        <div class="preset-block-head">
+          <span class="preset-block-title">Quick start</span>
+          <span class="preset-block-badge">Presets</span>
+        </div>
+        <div id="preset-buttons" class="preset-buttons"></div>
+      </div>
+      <div class="field field-tight">
+        <label class="field-label" for="spotify-url">Spotify URL</label>
+        <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/…" />
+      </div>
+      <div class="actions actions-tight">
+        <button type="button" id="btn-load" class="btn primary" disabled>Load &amp; start ranking</button>
+      </div>
+      <p id="load-status" class="status"></p>
+
       <h2 class="h2-tight">4. Saved</h2>
 
-      <div id="cloud-panel" class="cloud-panel">
+      <div id="cloud-panel" class="cloud-panel hidden">
         <div class="cloud-panel-head">
-          <span class="cloud-panel-title">Cloud</span>
-          <span class="cloud-panel-via">Supabase</span>
+          <span class="cloud-panel-title">Save online</span>
         </div>
         <p id="cloud-status" class="status cloud-status" role="status"></p>
         <div class="actions actions-tight cloud-actions">
-          <button type="button" id="btn-cloud-sync" class="btn primary btn-sm" disabled>Sync to cloud</button>
-          <button type="button" id="btn-cloud-restore" class="btn secondary btn-sm" disabled>Restore from cloud</button>
+          <button type="button" id="btn-cloud-sync" class="btn primary btn-sm" disabled>Save online</button>
+          <button type="button" id="btn-cloud-restore" class="btn secondary btn-sm" disabled>Restore</button>
         </div>
       </div>
 
@@ -263,6 +262,6 @@
     </section>
   </div>
   <script src="config.public.js?v=1"></script>
-  <script src="app.js?v=30" defer></script>
+  <script src="app.js?v=31" defer></script>
 </body>
 </html>
