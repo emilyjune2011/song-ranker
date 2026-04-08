@@ -19,6 +19,11 @@ const PRESET_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const SS_VERIFIER = "song_ranker_pkce_verifier";
 const SS_TOKEN = "song_ranker_access_token";
 const SS_EXPIRES = "song_ranker_token_expires_at";
+/** PKCE authorization code response may include this; used to obtain new access tokens (see Spotify “Refreshing tokens”). */
+const SS_REFRESH = "song_ranker_refresh_token";
+
+/** Single-flight refresh so concurrent api() calls don’t duplicate token requests. */
+let refreshAccessTokenPromise = null;
 
 /** Spotify artist preset id when user picked Quick start (not started until Start ranking). */
 let selectedPresetId = null;
@@ -83,9 +88,60 @@ function getAccessToken() {
   return t;
 }
 
+/** True if we have a valid access token or can refresh (user still “signed in”). */
+function hasSpotifySession() {
+  return !!getAccessToken() || !!sessionStorage.getItem(SS_REFRESH);
+}
+
 function setAccessToken(token, expiresInSec) {
   sessionStorage.setItem(SS_TOKEN, token);
   sessionStorage.setItem(SS_EXPIRES, String(Date.now() + expiresInSec * 1000));
+}
+
+/**
+ * Returns a valid access token for api.spotify.com (Bearer). Refreshes using refresh_token when
+ * the access token is expired or near expiry, per Spotify Web API token lifetime (~1h).
+ */
+async function refreshAccessTokenIfNeeded() {
+  const t = sessionStorage.getItem(SS_TOKEN);
+  const exp = Number(sessionStorage.getItem(SS_EXPIRES) || 0);
+  if (t && Date.now() < exp - 60_000) return t;
+  const rt = sessionStorage.getItem(SS_REFRESH);
+  const clientId = getEffectiveClientId();
+  if (!rt || !clientId) return null;
+  if (refreshAccessTokenPromise) return refreshAccessTokenPromise;
+  refreshAccessTokenPromise = (async () => {
+    try {
+      const body = new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: rt,
+        client_id: clientId,
+      });
+      const res = await fetch("https://accounts.spotify.com/api/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        sessionStorage.removeItem(SS_REFRESH);
+        sessionStorage.removeItem(SS_TOKEN);
+        sessionStorage.removeItem(SS_EXPIRES);
+        return null;
+      }
+      setAccessToken(data.access_token, data.expires_in || 3600);
+      if (data.refresh_token) sessionStorage.setItem(SS_REFRESH, data.refresh_token);
+      return data.access_token;
+    } catch {
+      sessionStorage.removeItem(SS_REFRESH);
+      sessionStorage.removeItem(SS_TOKEN);
+      sessionStorage.removeItem(SS_EXPIRES);
+      return null;
+    } finally {
+      refreshAccessTokenPromise = null;
+    }
+  })();
+  return refreshAccessTokenPromise;
 }
 
 function tokenHasPlaylistReadScope(token) {
@@ -104,15 +160,17 @@ function tokenHasPlaylistReadScope(token) {
 function updateLoadButtonState() {
   const btn = document.getElementById("btn-load");
   if (!btn) return;
-  const token = getAccessToken();
-  if (!token || !tokenHasPlaylistReadScope(token)) {
-    btn.disabled = true;
-    return;
-  }
-  const url = (document.getElementById("spotify-url")?.value || "").trim();
-  const hasPreset = selectedPresetId != null;
-  const hasUrl = url.length > 0;
-  btn.disabled = !(hasPreset || hasUrl);
+  void refreshAccessTokenIfNeeded().then(() => {
+    const token = getAccessToken();
+    if (!token || !tokenHasPlaylistReadScope(token)) {
+      btn.disabled = true;
+      return;
+    }
+    const url = (document.getElementById("spotify-url")?.value || "").trim();
+    const hasPreset = selectedPresetId != null;
+    const hasUrl = url.length > 0;
+    btn.disabled = !(hasPreset || hasUrl);
+  });
 }
 
 function clearPresetSelectionUI() {
@@ -143,6 +201,7 @@ function selectPreset(preset) {
 function clearAuth() {
   sessionStorage.removeItem(SS_TOKEN);
   sessionStorage.removeItem(SS_EXPIRES);
+  sessionStorage.removeItem(SS_REFRESH);
   clearPresetSelectionUI();
   updateSpotifySignOutVisibility();
   void refreshSpotifyUserDisplay();
@@ -173,7 +232,7 @@ const SPOTIFY_GAP_MS = 100;
 const SPOTIFY_BETWEEN_ALBUMS_MS = 55;
 
 async function api(pathOrUrl, options = {}) {
-  const token = getAccessToken();
+  const token = await refreshAccessTokenIfNeeded();
   if (!token) throw new Error("Not signed in.");
   const url = pathOrUrl.startsWith("http")
     ? pathOrUrl
@@ -262,7 +321,8 @@ async function refreshSpotifyUserDisplay() {
   const el = document.getElementById("user-display");
   const authStatus = document.getElementById("auth-status");
   if (!el) return;
-  if (!getAccessToken()) {
+  const sessionToken = await refreshAccessTokenIfNeeded();
+  if (!sessionToken) {
     el.classList.add("hidden");
     el.replaceChildren();
     return;
@@ -1741,7 +1801,7 @@ function updateUndoButton() {
 
 async function compareTracks(a, b, canDefer = true) {
   pendingPairForSave = [a.id, b.id];
-  if (currentBlindMode && getAccessToken()) {
+  if (currentBlindMode && (await refreshAccessTokenIfNeeded())) {
     try {
       await enrichTracksWithPreviews([a, b]);
     } catch (_) {
@@ -1968,7 +2028,10 @@ async function handleAuthReturn() {
 
   try {
     const data = await exchangeCodeForToken(code, verifier, clientId);
-    setAccessToken(data.access_token, data.expires_in);
+    setAccessToken(data.access_token, data.expires_in || 3600);
+    if (data.refresh_token) {
+      sessionStorage.setItem(SS_REFRESH, data.refresh_token);
+    }
     sessionStorage.removeItem(SS_VERIFIER);
     const granted = new Set((data.scope || "").split(/\s+/).filter(Boolean));
     if (!granted.has("playlist-read-private")) {
@@ -2015,7 +2078,7 @@ async function startLogin() {
 function updateSpotifySignOutVisibility() {
   const btn = document.getElementById("btn-logout-spotify");
   if (!btn) return;
-  btn.classList.toggle("hidden", !getAccessToken());
+  btn.classList.toggle("hidden", !hasSpotifySession());
 }
 
 function signOutSpotify() {
@@ -2123,6 +2186,8 @@ async function init() {
 
   document.getElementById("btn-login")?.addEventListener("click", startLogin);
 
+  await handleAuthReturn().catch(() => {});
+  await refreshAccessTokenIfNeeded();
   if (getAccessToken()) {
     refreshSpotifyUserDisplay().catch(() => {});
   }
@@ -2131,14 +2196,12 @@ async function init() {
 
   document.getElementById("btn-logout-spotify")?.addEventListener("click", signOutSpotify);
 
-  handleAuthReturn().catch(() => {});
-
   document.getElementById("btn-load")?.addEventListener("click", async () => {
     const status = document.getElementById("load-status");
     status.textContent = "";
     status.classList.remove("error");
 
-    if (!getAccessToken()) {
+    if (!(await refreshAccessTokenIfNeeded())) {
       status.textContent = "Sign in with Spotify first.";
       status.classList.add("error");
       return;
