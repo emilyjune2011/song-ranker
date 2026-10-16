@@ -1,50 +1,116 @@
 /**
- * Song ranker: merge-sort pairwise comparisons + Spotify Web API (PKCE).
+ * Song ranker: pairwise ranking (see ranker.js) + Spotify Web API (PKCE).
  */
 
+const { Ranker, createSession, estimateComparisons } = window.SongRanker;
+
 const REDIRECT_PATH = "callback.html";
-const AUTH_SCOPES = [
-  "playlist-read-private",
-  "playlist-read-collaborative",
-].join(" ");
+const AUTH_SCOPES = ["playlist-read-private", "playlist-read-collaborative"].join(" ");
 
 const LS_CLIENT = "song_ranker_spotify_client_id";
 const LS_SAVED_RANKINGS = "song_ranker_saved_rankings";
-const LS_PROGRESS_AUTOSAVE = "song_ranker_progress_autosave";
-const LS_PROGRESS_NAMED = "song_ranker_progress_named";
+const LS_SESSIONS = "song_ranker_sessions_v2";
 const LS_THEME = "song_ranker_theme";
-/** localStorage key prefix: `{prefix}{spotifyArtistId}` → JSON { v, savedAt, tracks } */
-const LS_PRESET_CACHE_PREFIX = "song_ranker_preset_cache_v1:";
-const PRESET_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** Pre-v2 in-progress keys, migrated into LS_SESSIONS on startup. */
+const LS_LEGACY_AUTOSAVE = "song_ranker_progress_autosave";
+const LS_LEGACY_NAMED = "song_ranker_progress_named";
+/** `{prefix}{artistId}:{albums|all}` → JSON { v, savedAt, tracks } */
+const LS_ARTIST_CACHE_PREFIX = "song_ranker_artist_cache_v2:";
+const ARTIST_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const SS_VERIFIER = "song_ranker_pkce_verifier";
 const SS_TOKEN = "song_ranker_access_token";
 const SS_EXPIRES = "song_ranker_token_expires_at";
-/** PKCE authorization code response may include this; used to obtain new access tokens (see Spotify “Refreshing tokens”). */
 const SS_REFRESH = "song_ranker_refresh_token";
 
-/** Single-flight refresh so concurrent api() calls don’t duplicate token requests. */
-let refreshAccessTokenPromise = null;
+/** Curated quick-start artists: { id, label }. */
+const RANK_PRESETS = [{ id: "5K4W6rqBFWDnAN6FQUkS6x", label: "Kanye West" }];
 
-/** Spotify artist preset id when user picked Quick start (not started until Start ranking). */
-let selectedPresetId = null;
+const isLocalDev =
+  location.protocol === "file:" || ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+
+/* ------------------------------------------------------------------ */
+/* Small helpers                                                       */
+/* ------------------------------------------------------------------ */
+
+const $ = (id) => document.getElementById(id);
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function setStatus(el, text, isError = false) {
+  if (!el) return;
+  el.textContent = text || "";
+  el.classList.toggle("error", !!isError);
+}
+
+function readJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function newId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return `s-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+/** Only allow links to Spotify (or plain https) — saved data and share links are untrusted. */
+function safeHref(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
+function downloadTextFile(filename, text, mime) {
+  const blob = new Blob([text], { type: mime });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+}
+
+function formatDate(ts) {
+  return new Date(ts).toLocaleDateString(undefined, { dateStyle: "medium" });
+}
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? "" : "s"}`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Spotify auth (PKCE)                                                 */
+/* ------------------------------------------------------------------ */
 
 function basePath() {
-  const p = window.location.pathname;
+  const p = location.pathname;
   if (p.endsWith("/")) return p;
   return p.replace(/\/[^/]+$/, "/") || "/";
 }
 
 function redirectUri() {
-  if (window.location.protocol === "file:" || !window.location.host) {
+  if (location.protocol === "file:" || !location.host) {
     return `http://127.0.0.1:8765/${REDIRECT_PATH}`;
   }
-  const origin = `${window.location.protocol}//${window.location.host}`;
-  return `${origin}${basePath()}${REDIRECT_PATH}`;
-}
-
-function setRedirectDisplay() {
-  const el = document.getElementById("redirect-uri-display");
-  if (el) el.textContent = redirectUri();
+  return `${location.protocol}//${location.host}${basePath()}${REDIRECT_PATH}`;
 }
 
 function base64urlEncode(buffer) {
@@ -54,31 +120,22 @@ function base64urlEncode(buffer) {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function sha256(plain) {
-  const data = new TextEncoder().encode(plain);
-  return crypto.subtle.digest("SHA-256", data);
-}
-
 async function generatePkce() {
   const verifier = base64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
-  const challenge = base64urlEncode(await sha256(verifier));
-  return { verifier, challenge };
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier));
+  return { verifier, challenge: base64urlEncode(digest) };
 }
 
 function getStoredClientId() {
   return localStorage.getItem(LS_CLIENT) || "";
 }
 
-/** Saved ID overrides config (handy for testing); otherwise use baked-in Client ID for hosted builds. */
-function getEffectiveClientId() {
-  const saved = (getStoredClientId() || "").trim();
-  const baked = (typeof window.SONG_RANKER_CLIENT_ID === "string" ? window.SONG_RANKER_CLIENT_ID : "").trim();
-  return saved || baked;
+function getBakedClientId() {
+  return (typeof window.SONG_RANKER_CLIENT_ID === "string" ? window.SONG_RANKER_CLIENT_ID : "").trim();
 }
 
-function setStoredClientId(id) {
-  if (id) localStorage.setItem(LS_CLIENT, id.trim());
-  else localStorage.removeItem(LS_CLIENT);
+function getEffectiveClientId() {
+  return getStoredClientId().trim() || getBakedClientId();
 }
 
 function getAccessToken() {
@@ -88,7 +145,6 @@ function getAccessToken() {
   return t;
 }
 
-/** True if we have a valid access token or can refresh (user still “signed in”). */
 function hasSpotifySession() {
   return !!getAccessToken() || !!sessionStorage.getItem(SS_REFRESH);
 }
@@ -98,1259 +154,921 @@ function setAccessToken(token, expiresInSec) {
   sessionStorage.setItem(SS_EXPIRES, String(Date.now() + expiresInSec * 1000));
 }
 
+function clearTokens() {
+  sessionStorage.removeItem(SS_TOKEN);
+  sessionStorage.removeItem(SS_EXPIRES);
+  sessionStorage.removeItem(SS_REFRESH);
+}
+
+let refreshPromise = null;
+
 /**
- * Returns a valid access token for api.spotify.com (Bearer). Refreshes using refresh_token when
- * the access token is expired or near expiry, per Spotify Web API token lifetime (~1h).
+ * Returns a usable access token, refreshing it when expired (or when `force` is set after a 401).
+ * Only a rejected refresh token signs the user out; a network blip just returns null.
  */
-async function refreshAccessTokenIfNeeded() {
-  const t = sessionStorage.getItem(SS_TOKEN);
-  const exp = Number(sessionStorage.getItem(SS_EXPIRES) || 0);
-  if (t && Date.now() < exp - 60_000) return t;
+async function getValidAccessToken(force = false) {
+  if (!force) {
+    const t = getAccessToken();
+    if (t) return t;
+  }
   const rt = sessionStorage.getItem(SS_REFRESH);
   const clientId = getEffectiveClientId();
   if (!rt || !clientId) return null;
-  if (refreshAccessTokenPromise) return refreshAccessTokenPromise;
-  refreshAccessTokenPromise = (async () => {
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
     try {
-      const body = new URLSearchParams({
-        grant_type: "refresh_token",
-        refresh_token: rt,
-        client_id: clientId,
-      });
       const res = await fetch("https://accounts.spotify.com/api/token", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body,
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: rt, client_id: clientId }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        sessionStorage.removeItem(SS_REFRESH);
-        sessionStorage.removeItem(SS_TOKEN);
-        sessionStorage.removeItem(SS_EXPIRES);
+        if (res.status === 400 || res.status === 401) clearTokens();
         return null;
       }
       setAccessToken(data.access_token, data.expires_in || 3600);
       if (data.refresh_token) sessionStorage.setItem(SS_REFRESH, data.refresh_token);
       return data.access_token;
     } catch {
-      sessionStorage.removeItem(SS_REFRESH);
-      sessionStorage.removeItem(SS_TOKEN);
-      sessionStorage.removeItem(SS_EXPIRES);
       return null;
     } finally {
-      refreshAccessTokenPromise = null;
+      refreshPromise = null;
     }
   })();
-  return refreshAccessTokenPromise;
+  return refreshPromise;
 }
 
-function tokenHasPlaylistReadScope(token) {
-  if (!token) return false;
+async function startLogin() {
+  const clientId = getEffectiveClientId();
+  if (!clientId) {
+    setStatus($("auth-status"), "No Spotify Client ID configured. Set it in config.public.js.", true);
+    return;
+  }
+  const { verifier, challenge } = await generatePkce();
+  sessionStorage.setItem(SS_VERIFIER, verifier);
+  const auth = new URL("https://accounts.spotify.com/authorize");
+  auth.searchParams.set("client_id", clientId);
+  auth.searchParams.set("response_type", "code");
+  auth.searchParams.set("redirect_uri", redirectUri());
+  auth.searchParams.set("scope", AUTH_SCOPES);
+  auth.searchParams.set("code_challenge_method", "S256");
+  auth.searchParams.set("code_challenge", challenge);
+  location.href = auth.toString();
+}
+
+async function handleAuthReturn() {
+  const params = new URLSearchParams(location.search);
+  const code = params.get("code");
+  const err = params.get("error");
+  const authStatus = $("auth-status");
+  if (!code && !err) return;
+  history.replaceState({}, "", location.pathname);
+  if (err) {
+    setStatus(authStatus, `Spotify sign-in didn’t finish: ${params.get("error_description") || err}`, true);
+    return;
+  }
+  const verifier = sessionStorage.getItem(SS_VERIFIER);
+  const clientId = getEffectiveClientId();
+  if (!verifier || !clientId) {
+    setStatus(authStatus, "Sign-in expired. Please try again.", true);
+    return;
+  }
   try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return true;
-    const json = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
-    const scopes = (json.scope || "").split(/\s+/).filter(Boolean);
-    return scopes.includes("playlist-read-private");
-  } catch {
-    return true;
-  }
-}
-
-function updateLoadButtonState() {
-  const btn = document.getElementById("btn-load");
-  if (!btn) return;
-  void refreshAccessTokenIfNeeded().then(() => {
-    const token = getAccessToken();
-    if (!token || !tokenHasPlaylistReadScope(token)) {
-      btn.disabled = true;
-      return;
-    }
-    const url = (document.getElementById("spotify-url")?.value || "").trim();
-    const hasPreset = selectedPresetId != null;
-    const hasUrl = url.length > 0;
-    btn.disabled = !(hasPreset || hasUrl);
-  });
-}
-
-function clearPresetSelectionUI() {
-  selectedPresetId = null;
-  document.querySelectorAll("#preset-buttons .btn-preset").forEach((b) => {
-    b.classList.remove("preset-selected");
-    b.setAttribute("aria-pressed", "false");
-  });
-  updateLoadButtonState();
-}
-
-function selectPreset(preset) {
-  if (selectedPresetId === preset.id) {
-    clearPresetSelectionUI();
-    return;
-  }
-  selectedPresetId = preset.id;
-  const urlInput = document.getElementById("spotify-url");
-  if (urlInput) urlInput.value = "";
-  document.querySelectorAll("#preset-buttons .btn-preset").forEach((b) => {
-    const isSel = b.dataset.presetId === preset.id;
-    b.classList.toggle("preset-selected", isSel);
-    b.setAttribute("aria-pressed", isSel ? "true" : "false");
-  });
-  updateLoadButtonState();
-}
-
-function clearAuth() {
-  sessionStorage.removeItem(SS_TOKEN);
-  sessionStorage.removeItem(SS_EXPIRES);
-  sessionStorage.removeItem(SS_REFRESH);
-  clearPresetSelectionUI();
-  updateSpotifySignOutVisibility();
-  void refreshSpotifyUserDisplay();
-}
-
-function parseSpotifyInput(input) {
-  const s = input.trim();
-  const m = s.match(/spotify\.com\/(?:intl-[a-z]{2}\/)?(playlist|artist|album|track)\/([a-zA-Z0-9]+)/);
-  if (!m) return null;
-  return { type: m[1], id: m[2] };
-}
-
-function spotifyApiErrorMessage(body) {
-  if (!body || typeof body !== "object") return "";
-  const e = body.error;
-  if (typeof e === "string") return e;
-  if (e && typeof e === "object" && typeof e.message === "string") return e.message;
-  return "";
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Clears Retry-After countdown UI (new load or new wait). */
-let rateLimitCountdownInterval = null;
-
-function clearRateLimitCountdownUi() {
-  if (rateLimitCountdownInterval) {
-    clearInterval(rateLimitCountdownInterval);
-    rateLimitCountdownInterval = null;
-  }
-}
-
-/**
- * During automatic 429 retries: wait totalMs and show a live countdown.
- * Spotify recommends waiting Retry-After seconds before calling the Web API again.
- */
-async function waitWithRetryAfterCountdown(totalMs, rawHint) {
-  const el = document.getElementById("load-status");
-  if (!el || totalMs < 1500) {
-    await sleep(totalMs);
-    return;
-  }
-  clearRateLimitCountdownUi();
-  const end = Date.now() + totalMs;
-  const tick = () => {
-    const left = Math.max(0, Math.ceil((end - Date.now()) / 1000));
-    el.textContent = rawHint
-      ? `Spotify rate limited — next API call in ${left}s (Retry-After: ${rawHint}).`
-      : `Spotify rate limited — next API call in ${left}s (Retry-After).`;
-    el.classList.add("error");
-  };
-  tick();
-  rateLimitCountdownInterval = setInterval(tick, 1000);
-  await sleep(totalMs);
-  clearInterval(rateLimitCountdownInterval);
-  rateLimitCountdownInterval = null;
-}
-
-/** After all retries fail: countdown until user should try again (last Retry-After). */
-function showTryAgainAfterRateLimit(seconds, rawHeader) {
-  clearRateLimitCountdownUi();
-  const el = document.getElementById("load-status");
-  if (!el) return;
-  let left = Math.max(1, Math.ceil(seconds));
-  const render = () => {
-    el.textContent = rawHeader
-      ? `Rate limit reached. Try again in ${left}s (Retry-After: ${rawHeader}).`
-      : `Rate limit reached. Try again in ${left}s.`;
-    el.classList.add("error");
-  };
-  render();
-  rateLimitCountdownInterval = setInterval(() => {
-    left -= 1;
-    if (left <= 0) {
-      clearRateLimitCountdownUi();
-      el.textContent = "You can try loading again.";
-      el.classList.remove("error");
-      return;
-    }
-    render();
-  }, 1000);
-}
-
-function applyLoadStatusError(status, e) {
-  if (!status) return;
-  if (e && typeof e.retryAfterSeconds === "number") {
-    showTryAgainAfterRateLimit(e.retryAfterSeconds, e.retryAfterHeader);
-    return;
-  }
-  status.textContent = e.message || String(e);
-  status.classList.add("error");
-}
-
-/** Retry-After can be seconds (string) or HTTP-date (RFC 7231). */
-function parseRetryAfterSeconds(raw) {
-  if (raw == null || raw === "") return null;
-  const t = String(raw).trim();
-  if (/^\d+(\.\d+)?$/.test(t)) {
-    const n = parseFloat(t);
-    return Math.min(600, Math.max(1, n));
-  }
-  const ms = Date.parse(t);
-  if (!Number.isNaN(ms)) {
-    const sec = Math.ceil((ms - Date.now()) / 1000);
-    return Math.min(600, Math.max(1, sec));
-  }
-  return null;
-}
-
-/** After 429, brief pause before the next Web API call (avoids immediate re-throttle). */
-let spotifyApiCooldownUntil = 0;
-
-/** Spacing between Spotify pagination calls (429 retries add extra waits). */
-const SPOTIFY_GAP_MS = 100;
-/** Short pause between different albums when crawling an artist (reduces burst 429s). */
-const SPOTIFY_BETWEEN_ALBUMS_MS = 55;
-
-async function api(pathOrUrl, options = {}) {
-  const token = await refreshAccessTokenIfNeeded();
-  if (!token) throw new Error("Not signed in.");
-  const url = pathOrUrl.startsWith("http")
-    ? pathOrUrl
-    : `https://api.spotify.com/v1${pathOrUrl}`;
-
-  const preWait = spotifyApiCooldownUntil - Date.now();
-  if (preWait > 0 && preWait < 10 * 60_000) {
-    await waitWithRetryAfterCountdown(preWait, "");
-  }
-
-  const maxAttempts = 8;
-  let last429Header = null;
-  let last429Sec = 0;
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const res = await fetch(url, {
-      ...options,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(options.headers || {}),
-      },
+    const res = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: redirectUri(),
+        client_id: clientId,
+        code_verifier: verifier,
+      }),
     });
-    if (res.status === 401) {
-      spotifyApiCooldownUntil = 0;
-      clearAuth();
-      throw new Error("Session expired. Sign in again.");
-    }
-    if (res.status === 429) {
-      await res.text().catch(() => {});
-      const raw = res.headers.get("Retry-After");
-      last429Header = raw;
-      let sec = parseRetryAfterSeconds(raw);
-      if (sec == null) {
-        sec = Math.min(120, 6 + attempt * 10 + Math.floor(Math.random() * 6));
-      }
-      last429Sec = sec;
-      spotifyApiCooldownUntil = Date.now() + sec * 1000 + 300;
-      if (attempt < maxAttempts - 1) {
-        const jitter = Math.floor(Math.random() * 600);
-        const waitMs = sec * 1000 + jitter;
-        const hint =
-          last429Header != null && last429Header !== "" ? String(last429Header) : "";
-        await waitWithRetryAfterCountdown(waitMs, hint);
-        continue;
-      }
-      const err = new Error(
-        `Spotify rate limit: wait before retrying. Limits are per app (Client ID) and are often tight in Development mode. Try “How to compare” → Standard, load an album or playlist instead of a full artist, or ask the owner to request Extended Quota in the Spotify Developer Dashboard.`
-      );
-      err.retryAfterSeconds = Math.ceil(last429Sec);
-      err.retryAfterHeader = last429Header;
-      err.code = "SPOTIFY_429";
-      throw err;
-    }
-    if (!res.ok) {
-      spotifyApiCooldownUntil = 0;
-      const err = await res.json().catch(() => ({}));
-      const detail = spotifyApiErrorMessage(err) || `${res.status} ${res.statusText}`;
-      if (res.status === 403) {
-        const lower = detail.toLowerCase();
-        const scopeOrPerm =
-          lower.includes("scope") ||
-          lower.includes("permission") ||
-          lower.includes("not authorized") ||
-          lower.includes("insufficient");
-        if (scopeOrPerm) {
-          clearAuth();
-          throw new Error(
-            `${detail} Sign in again so Spotify can grant playlist access (your previous login may have been created before those permissions were added).`
-          );
-        }
-        throw new Error(
-          `${detail} If you’re on this app’s User list in the Spotify dashboard, try signing out and signing in again. Also confirm this site uses the same Client ID as that Spotify app (Developer setup).`
-        );
-      }
-      throw new Error(detail);
-    }
-    spotifyApiCooldownUntil = 0;
-    return res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error_description || data.error || "Token exchange failed");
+    setAccessToken(data.access_token, data.expires_in || 3600);
+    if (data.refresh_token) sessionStorage.setItem(SS_REFRESH, data.refresh_token);
+    sessionStorage.removeItem(SS_VERIFIER);
+    setStatus(authStatus, "");
+  } catch (e) {
+    setStatus(authStatus, e.message || String(e), true);
   }
-  spotifyApiCooldownUntil = 0;
-  throw new Error("Spotify API: too many retries.");
 }
 
-/** Human-readable label for default save names (playlist / artist / album title). */
-async function fetchSpotifySourceLabel(parsed) {
-  if (!parsed?.id || !parsed?.type) return null;
-  try {
-    if (parsed.type === "playlist") {
-      const d = await api(`/playlists/${encodeURIComponent(parsed.id)}`);
-      return `Playlist: ${d.name || "Playlist"}`;
-    }
-    if (parsed.type === "artist") {
-      const d = await api(`/artists/${encodeURIComponent(parsed.id)}`);
-      return `Artist: ${d.name || "Artist"}`;
-    }
-    if (parsed.type === "album") {
-      const d = await api(`/albums/${encodeURIComponent(parsed.id)}`);
-      return `Album: ${d.name || "Album"}`;
-    }
-  } catch {
-    return null;
-  }
-  return null;
+function signOutSpotify() {
+  clearTokens();
+  updateAuthUi();
+  setStatus($("auth-status"), "Signed out.");
 }
 
-async function refreshSpotifyUserDisplay() {
-  const el = document.getElementById("user-display");
-  const authStatus = document.getElementById("auth-status");
-  if (!el) return;
-  const sessionToken = await refreshAccessTokenIfNeeded();
-  if (!sessionToken) {
-    el.classList.add("hidden");
-    el.replaceChildren();
+async function updateAuthUi() {
+  const signedIn = hasSpotifySession();
+  $("btn-login").classList.toggle("hidden", signedIn);
+  $("btn-logout-spotify").classList.toggle("hidden", !signedIn);
+  $("signin-card").classList.toggle("hidden", signedIn);
+  $("new-section").classList.toggle("hidden", !signedIn && !readyLoad);
+  updateLoadButtonState();
+  const userEl = $("user-display");
+  if (!signedIn) {
+    userEl.classList.add("hidden");
+    userEl.textContent = "";
     return;
   }
   try {
     const me = await api("/me");
-    const name = me.display_name || me.id || "Spotify";
-    el.replaceChildren();
-    el.classList.remove("hidden");
-    el.appendChild(document.createTextNode("Signed in as "));
-    const strong = document.createElement("strong");
-    strong.textContent = name;
-    el.appendChild(strong);
-    if (authStatus && !authStatus.classList.contains("error")) {
-      authStatus.textContent = "";
-    }
+    userEl.textContent = me.display_name || me.id || "Signed in";
   } catch {
-    el.replaceChildren();
-    el.classList.remove("hidden");
-    el.appendChild(document.createTextNode("Signed in to Spotify."));
-    if (authStatus && !authStatus.classList.contains("error")) {
-      authStatus.textContent = "";
-    }
+    userEl.textContent = hasSpotifySession() ? "Signed in" : "";
   }
+  userEl.classList.toggle("hidden", !userEl.textContent);
 }
 
-async function fetchAllPlaylistTracks(playlistId) {
-  const out = [];
-  const pageLimit = 50;
-  let offset = 0;
-  for (;;) {
-    const data = await api(
-      `/playlists/${encodeURIComponent(playlistId)}/items?limit=${pageLimit}&offset=${offset}`
-    );
-    const items = data.items || [];
-    for (const item of items) {
-      const t = item.track;
-      if (!t || !t.id) continue;
-      if (t.type === "episode") continue;
-      out.push(normalizeTrack(t));
-    }
-    if (!items.length) break;
-    offset += items.length;
-    if (data.total != null && offset >= data.total) break;
-    if (items.length < pageLimit) break;
-    await sleep(SPOTIFY_GAP_MS);
-  }
-  return dedupeById(out);
+/* ------------------------------------------------------------------ */
+/* Spotify Web API                                                     */
+/* ------------------------------------------------------------------ */
+
+/** Gap between paginated calls, to stay under Spotify's rolling rate limit. */
+const SPOTIFY_GAP_MS = 120;
+/** Wait automatically for Retry-After up to this long; beyond it, stop and tell the user. */
+const MAX_AUTO_WAIT_SEC = 20;
+const MAX_429_RETRIES = 3;
+
+let spotifyCooldownUntil = 0;
+let countdownTimer = null;
+
+function clearCountdown() {
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = null;
 }
 
-/**
- * Load album tracks. Uses GET /albums/{id} first — the response embeds track paging,
- * so we avoid a duplicate GET /albums/{id}/tracks for the first page (fewer API calls).
- * Returns sourceLabel so callers need not fetch album metadata again for save names.
- */
-async function fetchAlbumTracks(albumId) {
-  const meta = await api(`/albums/${encodeURIComponent(albumId)}`);
-  const albumName = meta.name || "";
-  const artistsMain = (meta.artists || []).map((a) => a.name).join(", ");
-  const out = [];
-
-  function pushPageItems(items) {
-    for (const t of items || []) {
-      const artists = (t.artists || []).map((a) => a.name).join(", ") || artistsMain;
-      out.push({
-        id: t.id,
-        name: t.name,
-        artists,
-        album: albumName,
-        url: t.external_urls?.spotify || spotifyTrackUrl(t.id),
-      });
+/** Shows a live "try again in Ns" message in the load status line. */
+function showCountdown(seconds, template, doneText) {
+  clearCountdown();
+  const el = $("load-status");
+  const end = Date.now() + seconds * 1000;
+  const render = () => {
+    const left = Math.ceil((end - Date.now()) / 1000);
+    if (left <= 0) {
+      clearCountdown();
+      if (doneText != null) setStatus(el, doneText);
+      return;
     }
-  }
-
-  const paging = meta.tracks;
-  if (paging) {
-    pushPageItems(paging.items);
-    let next = paging.next;
-    while (next) {
-      await sleep(SPOTIFY_GAP_MS);
-      const data = await api(next);
-      pushPageItems(data.items);
-      next = data.next;
-    }
-  } else {
-    const pageLimit = 50;
-    let offset = 0;
-    for (;;) {
-      const data = await api(
-        `/albums/${encodeURIComponent(albumId)}/tracks?limit=${pageLimit}&offset=${offset}`
-      );
-      pushPageItems(data.items);
-      const items = data.items || [];
-      if (!items.length) break;
-      offset += items.length;
-      if (data.total != null && offset >= data.total) break;
-      if (items.length < pageLimit) break;
-      await sleep(SPOTIFY_GAP_MS);
-    }
-  }
-
-  return {
-    tracks: dedupeById(out),
-    sourceLabel: albumName ? `Album: ${albumName}` : null,
+    setStatus(el, template.replace("{s}", left), true);
   };
+  render();
+  countdownTimer = setInterval(render, 1000);
 }
 
-async function fetchArtistTracks(artistId) {
-  const albumNames = new Map();
-  const albums = new Set();
-  /** Spotify Web API: Get Artist's Albums — limit max 10 (not 50). */
-  const albumPageLimit = 10;
-  let albumOffset = 0;
-  for (;;) {
-    const data = await api(
-      `/artists/${encodeURIComponent(artistId)}/albums?include_groups=album,single&limit=${albumPageLimit}&offset=${albumOffset}`
-    );
-    const items = data.items || [];
-    for (const a of items) {
-      albums.add(a.id);
-      albumNames.set(a.id, a.name);
-    }
-    if (!items.length) break;
-    albumOffset += items.length;
-    if (data.total != null && albumOffset >= data.total) break;
-    if (items.length < albumPageLimit) break;
-    await sleep(SPOTIFY_GAP_MS);
-  }
+function parseRetryAfterSeconds(raw) {
+  if (raw == null || raw === "") return null;
+  const t = String(raw).trim();
+  if (/^\d+(\.\d+)?$/.test(t)) return Math.max(1, parseFloat(t));
+  const ms = Date.parse(t);
+  if (!Number.isNaN(ms)) return Math.max(1, Math.ceil((ms - Date.now()) / 1000));
+  return null;
+}
 
-  const out = [];
-  const trackPageLimit = 50;
-  let albumIdx = 0;
-  for (const albumId of albums) {
-    if (albumIdx++ > 0) await sleep(SPOTIFY_BETWEEN_ALBUMS_MS);
-    let trackOffset = 0;
-    for (;;) {
-      const data = await api(
-        `/albums/${encodeURIComponent(albumId)}/tracks?limit=${trackPageLimit}&offset=${trackOffset}`
-      );
-      const items = data.items || [];
-      for (const t of items) {
-        const belongs = (t.artists || []).some((a) => a.id === artistId);
-        if (!belongs) continue;
-        const artists = (t.artists || []).map((a) => a.name).join(", ");
-        out.push({
-          id: t.id,
-          name: t.name,
-          artists,
-          album: albumNames.get(albumId) || "",
-          url: t.external_urls?.spotify || spotifyTrackUrl(t.id),
-        });
+function rateLimitError(seconds) {
+  const err = new Error("Spotify is rate limiting this app.");
+  err.code = "SPOTIFY_429";
+  err.retryAfterSeconds = Math.ceil(seconds);
+  return err;
+}
+
+function spotifyErrorDetail(body) {
+  const e = body?.error;
+  if (typeof e === "string") return e;
+  if (typeof e?.message === "string") return e.message;
+  return "";
+}
+
+async function api(pathOrUrl) {
+  const url = pathOrUrl.startsWith("http") ? pathOrUrl : `https://api.spotify.com/v1${pathOrUrl}`;
+  let token = await getValidAccessToken();
+  if (!token) throw new Error("Please sign in with Spotify again.");
+
+  const cooldown = (spotifyCooldownUntil - Date.now()) / 1000;
+  if (cooldown > MAX_AUTO_WAIT_SEC) throw rateLimitError(cooldown);
+  if (cooldown > 0) await sleep(cooldown * 1000);
+
+  let retried401 = false;
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (res.status === 401 && !retried401) {
+      retried401 = true;
+      token = await getValidAccessToken(true);
+      if (token) continue;
+    }
+    if (res.status === 401) {
+      clearTokens();
+      updateAuthUi();
+      throw new Error("Your Spotify session expired. Please sign in again.");
+    }
+    if (res.status === 429) {
+      await res.text().catch(() => {});
+      const sec = parseRetryAfterSeconds(res.headers.get("Retry-After")) ?? 3 + attempt * 4;
+      spotifyCooldownUntil = Date.now() + sec * 1000;
+      if (sec > MAX_AUTO_WAIT_SEC || attempt >= MAX_429_RETRIES) throw rateLimitError(sec);
+      showCountdown(sec, "Spotify asked us to slow down. Continuing in {s}s…", null);
+      await sleep(sec * 1000 + Math.random() * 400);
+      clearCountdown();
+      continue;
+    }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const detail = spotifyErrorDetail(body) || `${res.status} ${res.statusText}`;
+      if (res.status === 403) {
+        throw new Error(
+          `Spotify refused the request (${detail}). If this is a new device or account, it may need to be added to the app’s user list in the Spotify developer dashboard.`
+        );
       }
-      if (!items.length) break;
-      trackOffset += items.length;
-      if (data.total != null && trackOffset >= data.total) break;
-      if (items.length < trackPageLimit) break;
-      await sleep(SPOTIFY_GAP_MS);
+      if (res.status === 404) throw new Error("Spotify couldn’t find that. Check the link and try again.");
+      throw new Error(`Spotify error: ${detail}`);
     }
+    return res.json();
   }
-  return dedupeById(out);
 }
 
-function normalizeTrack(t) {
-  const artists = (t.artists || []).map((a) => a.name).join(", ");
+function parseSpotifyInput(input) {
+  const s = (input || "").trim();
+  const m =
+    s.match(/spotify\.com\/(?:intl-[a-z-]+\/)?(playlist|artist|album|track)\/([a-zA-Z0-9]+)/) ||
+    s.match(/^spotify:(playlist|artist|album|track):([a-zA-Z0-9]+)$/);
+  return m ? { type: m[1], id: m[2] } : null;
+}
+
+function pickImage(images) {
+  if (!Array.isArray(images) || !images.length) return null;
+  // Spotify returns largest first (640, 300, 64); 300 is plenty for cards.
+  return (images[1] || images[0]).url || null;
+}
+
+function makeTrack(t, album) {
   return {
     id: t.id,
     name: t.name,
-    artists,
-    album: t.album?.name || "",
-    url: t.external_urls?.spotify || spotifyTrackUrl(t.id),
-    previewUrl: t.preview_url || null,
+    artists: (t.artists || []).map((a) => a.name).join(", "),
+    album: album?.name || "",
+    image: pickImage(album?.images),
+    url: t.external_urls?.spotify || `https://open.spotify.com/track/${t.id}`,
   };
 }
 
-function spotifyTrackUrl(id) {
-  return `https://open.spotify.com/track/${id}`;
-}
-
-function dedupeById(tracks) {
-  const map = new Map();
-  for (const t of tracks) {
-    if (!map.has(t.id)) map.set(t.id, t);
-    else {
-      const cur = map.get(t.id);
-      if (!cur.previewUrl && t.previewUrl) cur.previewUrl = t.previewUrl;
-    }
-  }
-  return [...map.values()];
-}
-
-async function enrichTracksWithPreviews(tracks) {
-  const ids = [];
-  for (const t of tracks) {
-    if (t.previewUrl || !t.id || String(t.id).startsWith("manual")) continue;
-    ids.push(t.id);
-  }
-  const unique = [...new Set(ids)];
-  const chunk = 50;
-  for (let i = 0; i < unique.length; i += chunk) {
-    if (i > 0) await sleep(SPOTIFY_GAP_MS);
-    const slice = unique.slice(i, i + chunk);
-    const data = await api(`/tracks?ids=${slice.map(encodeURIComponent).join(",")}`);
-    const byId = new Map((data.tracks || []).filter(Boolean).map((tr) => [tr.id, tr]));
-    for (const t of tracks) {
-      const tr = byId.get(t.id);
-      if (tr && !t.previewUrl) t.previewUrl = tr.preview_url || null;
-    }
-  }
-}
-
 /**
- * Curated presets (Spotify artist IDs). Add entries: { id, label }.
- * @see https://open.spotify.com/artist/…
+ * Title used to spot the same song released several times (single + album, deluxe,
+ * remaster, clean/explicit). Remixes, live and acoustic versions stay distinct.
  */
-const RANK_PRESETS = [{ id: "5K4W6rqBFWDnAN6FQUkS6x", label: "Kanye West" }];
-
-function getPresetTracksCache(artistId) {
-  try {
-    const raw = localStorage.getItem(LS_PRESET_CACHE_PREFIX + artistId);
-    if (!raw) return null;
-    const data = JSON.parse(raw);
-    if (!data || data.v !== 1 || !Array.isArray(data.tracks)) return null;
-    if (typeof data.savedAt !== "number" || Date.now() - data.savedAt > PRESET_CACHE_MAX_AGE_MS) {
-      localStorage.removeItem(LS_PRESET_CACHE_PREFIX + artistId);
-      return null;
-    }
-    return dedupeById(JSON.parse(JSON.stringify(data.tracks)));
-  } catch {
-    return null;
-  }
+function normalizeTitle(name) {
+  const noise = /\b(feat\.?|ft\.?|featuring|with|remaster(ed)?|\d{4} remaster(ed)?|single version|album version|radio edit|explicit|clean|mono|stereo|bonus track)\b/i;
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\s*[([][^)\]]*[)\]]/g, (m) => (noise.test(m) ? "" : m))
+    .replace(/\s+-\s+.*$/, (m) => (noise.test(m) ? "" : m))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-function setPresetTracksCache(artistId, tracks) {
-  try {
-    localStorage.setItem(
-      LS_PRESET_CACHE_PREFIX + artistId,
-      JSON.stringify({
-        v: 1,
-        savedAt: Date.now(),
-        tracks: JSON.parse(JSON.stringify(tracks)),
-      })
-    );
-  } catch {
-    /* quota or private mode */
-  }
-}
-
-async function startRankingFromPreset(preset) {
-  const status = document.getElementById("load-status");
-  clearRateLimitCountdownUi();
-  status.textContent = "Loading…";
-  try {
-    let tracks = getPresetTracksCache(preset.id);
-    const fromCache = tracks != null;
-    if (!tracks) {
-      tracks = await fetchArtistTracks(preset.id);
-    }
-    if (tracks.length < 2) {
-      status.textContent = "Need at least two tracks to rank.";
-      status.classList.add("error");
-      return;
-    }
-    if (!fromCache) {
-      setPresetTracksCache(preset.id, tracks);
-    }
-    status.textContent = fromCache
-      ? `Loaded ${tracks.length} tracks (saved on this device).`
-      : `Loaded ${tracks.length} tracks.`;
-    await runRanking(tracks, {
-      sourceLabel: `Artist: ${preset.label}`,
-      presetCacheArtistId: preset.id,
-    });
-  } catch (e) {
-    applyLoadStatusError(status, e);
-  }
-}
-
-/** Guess a save label from track metadata (e.g. single artist or album). */
-function guessLabelFromTracks(tracks) {
-  if (!tracks?.length) return null;
-  const artistNames = new Set();
-  for (const t of tracks) {
-    if (t.artists) {
-      for (const part of t.artists.split(",")) {
-        const s = part.trim();
-        if (s) artistNames.add(s);
-      }
-    }
-  }
-  if (artistNames.size === 1) return `Artist: ${[...artistNames][0]}`;
-  const albums = [...new Set(tracks.map((t) => t.album).filter(Boolean))];
-  if (albums.length === 1) return `Album: ${albums[0]}`;
-  return `Manual list (${tracks.length} songs)`;
-}
-
-/** --- UI state --- */
-
-let compareStep = 0;
-let compareEstimate = 0;
-let pendingResolve = null;
-
-function estimateMergeComparisons(n) {
-  if (n <= 1) return 0;
-  return Math.ceil(n * Math.ceil(Math.log2(n)));
-}
-
-/** Rough upper bound for “top k” mode (fewer pairs than full sort when k ≪ n). */
-function estimateTopNComparisons(n, k) {
-  if (n <= 1) return 0;
-  if (!k || k >= n) return estimateMergeComparisons(n);
-  const kk = Math.min(k, n);
-  return Math.ceil(n * Math.ceil(Math.log2(kk + 1)));
-}
-
-function updateProgress() {
-  const fill = document.getElementById("progress-fill");
-  const text = document.getElementById("progress-text");
-  if (!fill || !text) return;
-  const pct = compareEstimate ? Math.min(100, (compareStep / compareEstimate) * 100) : 0;
-  fill.style.width = `${pct}%`;
-  text.textContent = compareEstimate ? `~${compareStep} / ~${compareEstimate} choices` : "";
-}
-
-function showComparePanel(show) {
-  document.getElementById("panel-setup")?.classList.toggle("hidden", show);
-  document.getElementById("panel-compare")?.classList.toggle("hidden", !show);
-  document.getElementById("compare-kb-hint")?.setAttribute("aria-hidden", show ? "false" : "true");
-}
-
-function showResultsPanel(show) {
-  document.getElementById("panel-results")?.classList.toggle("hidden", !show);
-}
-
-function spotifyTrackIdForEmbed(track) {
-  let id = track?.id;
-  if (!id || String(id).startsWith("manual")) {
-    const u = track?.url;
-    if (u && u !== "#") {
-      const m = String(u).match(/track\/([a-zA-Z0-9]+)/);
-      if (m) id = m[1];
-    }
-  }
-  if (!id || String(id).startsWith("manual")) return "";
-  return id;
-}
-
-function spotifyEmbedSrc(track) {
-  const id = spotifyTrackIdForEmbed(track);
-  if (!id) return "";
-  return `https://open.spotify.com/embed/track/${encodeURIComponent(id)}?theme=0`;
-}
-
-function setTrackEmbed(iframeId, wrapId, track) {
-  const iframe = document.getElementById(iframeId);
-  const wrap = document.getElementById(wrapId);
-  if (!iframe || !wrap) return;
-  const src = spotifyEmbedSrc(track);
-  if (src) {
-    wrap.classList.remove("hidden");
-    iframe.setAttribute("title", `Spotify preview: ${track.name}`);
-    iframe.src = src;
-  } else {
-    iframe.removeAttribute("src");
-    wrap.classList.add("hidden");
-  }
-}
-
-function renderPair(a, b) {
-  const blind = !!currentBlindMode;
-  const panel = document.getElementById("panel-compare");
-  panel?.classList.toggle("blind-mode", blind);
-
-  if (blind) {
-    document.getElementById("embed-wrap-a")?.classList.add("hidden");
-    document.getElementById("embed-wrap-b")?.classList.add("hidden");
-    document.getElementById("embed-a")?.removeAttribute("src");
-    document.getElementById("embed-b")?.removeAttribute("src");
-    document.getElementById("blind-wrap-a")?.classList.remove("hidden");
-    document.getElementById("blind-wrap-b")?.classList.remove("hidden");
-
-    document.getElementById("title-a").textContent = "Side A";
-    document.getElementById("meta-a").textContent = "Listen · pick the clip you prefer";
-    document.getElementById("title-b").textContent = "Side B";
-    document.getElementById("meta-b").textContent = "Listen · pick the clip you prefer";
-    document.getElementById("card-a")?.setAttribute("aria-label", "Prefer side A");
-    document.getElementById("card-b")?.setAttribute("aria-label", "Prefer side B");
-
-    const puA = a.previewUrl || "";
-    const puB = b.previewUrl || "";
-    const audioA = document.getElementById("audio-a");
-    const audioB = document.getElementById("audio-b");
-    if (audioA) {
-      audioA.pause();
-      audioA.src = puA || "";
-      audioA.load();
-    }
-    if (audioB) {
-      audioB.pause();
-      audioB.src = puB || "";
-      audioB.load();
-    }
-    document.getElementById("blind-no-preview-a")?.classList.toggle("hidden", !!puA);
-    document.getElementById("blind-no-preview-b")?.classList.toggle("hidden", !!puB);
-  } else {
-    document.getElementById("blind-wrap-a")?.classList.add("hidden");
-    document.getElementById("blind-wrap-b")?.classList.add("hidden");
-    document.getElementById("embed-a")?.removeAttribute("src");
-    document.getElementById("embed-b")?.removeAttribute("src");
-    const audioA = document.getElementById("audio-a");
-    const audioB = document.getElementById("audio-b");
-    if (audioA) {
-      audioA.pause();
-      audioA.removeAttribute("src");
-    }
-    if (audioB) {
-      audioB.pause();
-      audioB.removeAttribute("src");
-    }
-    document.getElementById("title-a").textContent = a.name;
-    document.getElementById("meta-a").textContent = [a.artists, a.album].filter(Boolean).join(" · ");
-    document.getElementById("title-b").textContent = b.name;
-    document.getElementById("meta-b").textContent = [b.artists, b.album].filter(Boolean).join(" · ");
-    document.getElementById("card-a")?.setAttribute("aria-label", `Prefer ${a.name}`);
-    document.getElementById("card-b")?.setAttribute("aria-label", `Prefer ${b.name}`);
-    setTrackEmbed("embed-a", "embed-wrap-a", a);
-    setTrackEmbed("embed-b", "embed-wrap-b", b);
-  }
-}
-
-function shuffleInPlace(arr) {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-}
-
-/** Directed edges: winnerId → loserId means “winner preferred over loser”. Used to skip redundant merge questions. */
-const CMP_UNDO = Symbol("cmpUndo");
-const CMP_ABORT = Symbol("cmpAbort");
-
-let preferenceAdj = null;
-/** Stack of recorded preferences (not skips); each entry has track refs to re-ask that pair on undo. */
-let choiceHistory = [];
-/** After undo, re-ask this pair before picking another from the graph. */
-let undoForcedPair = null;
-/** Skip counts per pair (pairKey → times deferred); must persist for resume. */
-let rankingDeferredCounts = new Map();
-/** User chose Home while ranking; checked each comparison turn. */
-let rankingAbortRequested = false;
-/** Playlist / artist / album (or guessed) label for default save names. */
-let rankingSourceLabel = null;
-/** null = full order; number = stop at top N (fewer comparisons). */
-let currentRankingTopN = null;
-/** Blind compare: hide titles and embeds; use preview MP3 only. */
-let currentBlindMode = false;
-/** Snapshot for share link (topN + label); cleared when session ends. */
-let lastShareMeta = null;
-
-function resetPreferenceGraph() {
-  preferenceAdj = new Map();
-  choiceHistory = [];
-  undoForcedPair = null;
-  rankingDeferredCounts = new Map();
-}
-
-function recordPreference(winnerId, loserId) {
-  if (!preferenceAdj.has(winnerId)) preferenceAdj.set(winnerId, new Set());
-  preferenceAdj.get(winnerId).add(loserId);
-}
-
-function removePreferenceEdge(winnerId, loserId) {
-  const s = preferenceAdj.get(winnerId);
-  if (!s) return;
-  s.delete(loserId);
-  if (s.size === 0) preferenceAdj.delete(winnerId);
-}
-
-function pushChoice(winnerId, loserId, a, b) {
-  choiceHistory.push({ winnerId, loserId, a, b });
-}
-
-function isPreferredOver(preferredId, otherId) {
-  if (preferredId === otherId) return false;
-  const visited = new Set();
-  const stack = [preferredId];
-  while (stack.length) {
-    const x = stack.pop();
-    if (x === otherId) return true;
-    if (visited.has(x)) continue;
-    visited.add(x);
-    for (const y of preferenceAdj.get(x) || []) {
-      stack.push(y);
-    }
-  }
-  return false;
-}
-
-function pairKey(a, b) {
-  return a.id < b.id ? `${a.id}|${b.id}` : `${b.id}|${a.id}`;
-}
-
-function findIncomparablePairs(tracks) {
-  const pairs = [];
-  for (let i = 0; i < tracks.length; i++) {
-    for (let j = i + 1; j < tracks.length; j++) {
-      const a = tracks[i];
-      const b = tracks[j];
-      if (a.id === b.id) continue;
-      if (!isPreferredOver(a.id, b.id) && !isPreferredOver(b.id, a.id)) {
-        pairs.push([a, b]);
-      }
-    }
-  }
-  return pairs;
-}
-
-function countStrictlyPreferredAbove(allTracks, trackId) {
-  let c = 0;
-  for (const o of allTracks) {
-    if (o.id === trackId) continue;
-    if (isPreferredOver(o.id, trackId)) c += 1;
-  }
-  return c;
-}
-
-/** Tracks that can still place in the top-N band (fewer than N others strictly above). */
-function getActiveTracksForTopN(allTracks, topN) {
-  return allTracks.filter((t) => countStrictlyPreferredAbove(allTracks, t.id) < topN);
-}
-
-function pickNextPair(pairs) {
-  const scored = pairs.map(([a, b]) => ({
-    a,
-    b,
-    d: rankingDeferredCounts.get(pairKey(a, b)) || 0,
-  }));
-  scored.sort((x, y) => {
-    if (x.d !== y.d) return x.d - y.d;
-    return Math.random() - 0.5;
-  });
-  return [scored[0].a, scored[0].b];
-}
-
-function extractRanking(tracks) {
-  const n = tracks.length;
-  const idToTrack = new Map(tracks.map((t) => [t.id, t]));
-  const indeg = new Map();
-  for (const t of tracks) indeg.set(t.id, 0);
-  for (const [, losers] of preferenceAdj) {
-    for (const l of losers) {
-      indeg.set(l, (indeg.get(l) || 0) + 1);
-    }
-  }
-  const q = [];
-  for (const t of tracks) {
-    if ((indeg.get(t.id) || 0) === 0) q.push(t.id);
-  }
-  const ranked = [];
-  while (q.length) {
-    if (q.length > 1) {
-      throw new Error("Ranking ambiguous; need more comparisons.");
-    }
-    const id = q.shift();
-    ranked.push(idToTrack.get(id));
-    for (const l of preferenceAdj.get(id) || []) {
-      indeg.set(l, indeg.get(l) - 1);
-      if (indeg.get(l) === 0) q.push(l);
-    }
-  }
-  if (ranked.length !== n) {
-    throw new Error("Preferential cycle detected; try ranking again.");
-  }
-  return ranked;
-}
-
-function extractRankingSubset(subsetTracks) {
-  const ids = new Set(subsetTracks.map((t) => t.id));
-  const n = subsetTracks.length;
-  const idToTrack = new Map(subsetTracks.map((t) => [t.id, t]));
-  const indeg = new Map();
-  for (const t of subsetTracks) indeg.set(t.id, 0);
-  for (const t of subsetTracks) {
-    const w = t.id;
-    for (const l of preferenceAdj.get(w) || []) {
-      if (ids.has(l)) {
-        indeg.set(l, (indeg.get(l) || 0) + 1);
-      }
-    }
-  }
-  const q = [];
-  for (const t of subsetTracks) {
-    if ((indeg.get(t.id) || 0) === 0) q.push(t.id);
-  }
-  const ranked = [];
-  while (q.length) {
-    if (q.length > 1) {
-      throw new Error("Ranking ambiguous; need more comparisons.");
-    }
-    const id = q.shift();
-    ranked.push(idToTrack.get(id));
-    for (const l of preferenceAdj.get(id) || []) {
-      if (!ids.has(l)) continue;
-      indeg.set(l, indeg.get(l) - 1);
-      if (indeg.get(l) === 0) q.push(l);
-    }
-  }
-  if (ranked.length !== n) {
-    throw new Error("Preferential cycle detected; try ranking again.");
-  }
-  return ranked;
-}
-
-/** Active session order (for save / resume); null when not ranking. */
-let currentRankingOrder = null;
-/** Current head-to-head on screen [idA, idB] while waiting for an answer. */
-let pendingPairForSave = null;
-
-function findTrackById(tracks, id) {
-  return tracks.find((t) => t.id === id) || null;
-}
-
-function preferenceAdjToJSON() {
-  const o = {};
-  for (const [w, losers] of preferenceAdj) {
-    o[w] = [...losers];
-  }
-  return o;
-}
-
-function preferenceAdjFromJSON(obj) {
-  const m = new Map();
-  if (!obj || typeof obj !== "object") return m;
-  for (const [w, losers] of Object.entries(obj)) {
-    m.set(w, new Set(Array.isArray(losers) ? losers : []));
-  }
-  return m;
-}
-
-function choiceHistoryToJSON() {
-  return choiceHistory.map(({ winnerId, loserId, a, b }) => ({
-    winnerId,
-    loserId,
-    aId: a.id,
-    bId: b.id,
-  }));
-}
-
-function reconstructChoiceHistory(entries, tracks) {
-  const byId = new Map(tracks.map((t) => [t.id, t]));
+/** Drops repeat IDs and repeat releases of the same song; the first one seen wins. */
+function dedupeSongs(tracks) {
+  const seenIds = new Set();
+  const seenSongs = new Set();
   const out = [];
-  for (const e of entries || []) {
-    const a = byId.get(e.aId);
-    const b = byId.get(e.bId);
-    if (a && b) out.push({ winnerId: e.winnerId, loserId: e.loserId, a, b });
+  for (const t of tracks) {
+    if (!t?.id || seenIds.has(t.id)) continue;
+    seenIds.add(t.id);
+    const mainArtist = (t.artists || "").split(",")[0].trim().toLowerCase();
+    const key = `${normalizeTitle(t.name)}|${mainArtist}`;
+    if (seenSongs.has(key)) continue;
+    seenSongs.add(key);
+    out.push(t);
   }
   return out;
 }
 
-function getPendingPairIds() {
-  if (undoForcedPair) return [undoForcedPair[0].id, undoForcedPair[1].id];
-  if (pendingPairForSave) return [...pendingPairForSave];
-  return null;
-}
-
-function buildProgressSnapshot() {
-  if (!currentRankingOrder?.length) return null;
-  return {
-    v: 1,
-    savedAt: Date.now(),
-    tracks: currentRankingOrder.map((t) => ({ ...t })),
-    adj: preferenceAdjToJSON(),
-    choiceHistory: choiceHistoryToJSON(),
-    deferred: [...rankingDeferredCounts.entries()],
-    pendingPair: getPendingPairIds(),
-    compareStep,
-    compareEstimate,
-    sourceLabel: rankingSourceLabel || null,
-    rankingTopN: currentRankingTopN ?? null,
-    blindMode: !!currentBlindMode,
-  };
-}
-
-function applyResumeSnapshot(snap, order) {
-  preferenceAdj = preferenceAdjFromJSON(snap.adj);
-  choiceHistory = reconstructChoiceHistory(snap.choiceHistory, order);
-  rankingDeferredCounts = new Map(snap.deferred || []);
-  undoForcedPair = null;
-  if (snap.pendingPair && snap.pendingPair.length === 2) {
-    const ta = findTrackById(order, snap.pendingPair[0]);
-    const tb = findTrackById(order, snap.pendingPair[1]);
-    if (ta && tb) undoForcedPair = [ta, tb];
-  }
-  compareStep = snap.compareStep ?? 0;
-  rankingSourceLabel = snap.sourceLabel || guessLabelFromTracks(order);
-  currentRankingTopN = snap.rankingTopN != null ? Math.min(snap.rankingTopN, order.length) : null;
-  if (currentRankingTopN != null && (currentRankingTopN < 2 || currentRankingTopN >= order.length)) {
-    currentRankingTopN = null;
-  }
-  syncRankingModeSelect(currentRankingTopN, order.length);
-  compareEstimate =
-    snap.compareEstimate ??
-    (currentRankingTopN != null
-      ? estimateTopNComparisons(order.length, currentRankingTopN)
-      : estimateMergeComparisons(order.length));
-  currentBlindMode = snap.blindMode === true;
-  syncExperienceSelect(currentBlindMode);
-}
-
-function isValidProgressSnapshot(o) {
-  return (
-    o &&
-    o.v === 1 &&
-    Array.isArray(o.tracks) &&
-    o.tracks.length >= 2 &&
-    o.adj &&
-    typeof o.adj === "object"
-  );
-}
-
-let progressAutosaveTimer = null;
-
-function scheduleProgressAutosave() {
-  if (!currentRankingOrder?.length) return;
-  if (progressAutosaveTimer) clearTimeout(progressAutosaveTimer);
-  progressAutosaveTimer = setTimeout(() => {
-    progressAutosaveTimer = null;
-    try {
-      const snap = buildProgressSnapshot();
-      if (!snap) return;
-      localStorage.setItem(LS_PROGRESS_AUTOSAVE, JSON.stringify(snap));
-      refreshProgressPicker();
-    } catch (_) {}
-  }, 450);
-}
-
-function clearProgressAutosave() {
-  try {
-    localStorage.removeItem(LS_PROGRESS_AUTOSAVE);
-  } catch (_) {}
-  refreshProgressPicker();
-}
-
-function getNamedProgressList() {
-  try {
-    const raw = localStorage.getItem(LS_PROGRESS_NAMED);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
+async function fetchPaged(firstUrl, onPage) {
+  let next = firstUrl;
+  let first = true;
+  while (next) {
+    if (!first) await sleep(SPOTIFY_GAP_MS);
+    first = false;
+    const data = await api(next);
+    onPage(data.items || []);
+    next = data.next;
   }
 }
 
-function setNamedProgressList(list) {
-  localStorage.setItem(LS_PROGRESS_NAMED, JSON.stringify(list));
-}
-
-function refreshProgressPicker() {
-  const sel = document.getElementById("progress-pick");
-  if (!sel) return;
-  const autosave = localStorage.getItem(LS_PROGRESS_AUTOSAVE);
-  sel.innerHTML = '<option value="">Choose a session…</option>';
-  if (autosave) {
-    try {
-      const snap = JSON.parse(autosave);
-      const opt = document.createElement("option");
-      opt.value = "__autosave__";
-      const n = snap.tracks?.length || "?";
-      const t = snap.savedAt ? new Date(snap.savedAt).toLocaleString() : "";
-      const mode =
-        snap.rankingTopN != null && snap.rankingTopN >= 2 ? ` · top ${snap.rankingTopN}` : "";
-      opt.textContent = `In progress · ${n} songs${mode} · ${t}`;
-      sel.appendChild(opt);
-    } catch (_) {}
-  }
-  for (const s of getNamedProgressList().sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0))) {
-    const opt = document.createElement("option");
-    opt.value = s.id;
-    const base = (s.name || "Untitled").slice(0, 72);
-    const mode =
-      s.snapshot?.rankingTopN != null && s.snapshot.rankingTopN >= 2
-        ? ` · top ${s.snapshot.rankingTopN}`
-        : "";
-    opt.textContent = `${base}${mode}`;
-    sel.appendChild(opt);
-  }
-}
-
-function getSelectedProgressSnapshot() {
-  const sel = document.getElementById("progress-pick");
-  const id = sel?.value;
-  if (!id) return null;
-  if (id === "__autosave__") {
-    const raw = localStorage.getItem(LS_PROGRESS_AUTOSAVE);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  }
-  const found = getNamedProgressList().find((x) => x.id === id);
-  return found?.snapshot || null;
-}
-
-function downloadTextFile(filename, text, mime) {
-  const blob = new Blob([text], { type: mime });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(a.href);
-}
-
-function saveProgressNow(statusEl) {
-  const el = statusEl || document.getElementById("compare-save-status");
-  const snap = buildProgressSnapshot();
-  if (!snap) {
-    if (el) el.textContent = "Nothing to save.";
-    return;
-  }
-  try {
-    localStorage.setItem(LS_PROGRESS_AUTOSAVE, JSON.stringify(snap));
-    refreshProgressPicker();
-    if (el) el.textContent = "Saved on this device.";
-  } catch {
-    if (el) el.textContent = "Couldn’t save (storage blocked or full).";
-  }
-}
-
-function deleteSelectedProgress() {
-  const sel = document.getElementById("progress-pick");
-  const id = sel?.value;
-  const status = document.getElementById("progress-status");
-  if (!id) {
-    if (status) {
-      status.textContent = "Pick a session from the list first.";
-      status.classList.add("error");
+async function fetchPlaylist(playlistId, onProgress) {
+  const meta = await api(`/playlists/${encodeURIComponent(playlistId)}?fields=name,images`);
+  const out = [];
+  await fetchPaged(`/playlists/${encodeURIComponent(playlistId)}/items?limit=50`, (items) => {
+    for (const item of items) {
+      const t = item.track || item.item;
+      if (!t || !t.id || t.type === "episode") continue;
+      out.push(makeTrack(t, t.album));
     }
-    return;
-  }
-  if (id === "__autosave__") {
-    if (!confirm("Delete your in-progress ranking from this device?")) return;
-    clearProgressAutosave();
-    if (status) {
-      status.textContent = "Deleted.";
-      status.classList.remove("error");
-    }
-    return;
-  }
-  if (!confirm("Delete this saved copy?")) return;
-  const next = getNamedProgressList().filter((x) => x.id !== id);
-  setNamedProgressList(next);
-  refreshProgressPicker();
-  if (status) {
-    status.textContent = "Deleted.";
-    status.classList.remove("error");
-  }
-}
-
-function csvEscapeCell(s) {
-  if (s == null) return "";
-  const t = String(s);
-  if (/[",\n\r]/.test(t)) return `"${t.replace(/"/g, '""')}"`;
-  return t;
-}
-
-function exportRankingToJson() {
-  const ranked = window.__lastRanked;
-  const status = document.getElementById("copy-status");
-  if (!ranked?.length) {
-    status.textContent = "Nothing to export.";
-    return;
-  }
-  const payload = {
-    v: 1,
-    type: "song_ranker_result",
-    exportedAt: new Date().toISOString(),
-    tracks: ranked.map((t) => ({ ...t })),
-  };
-  downloadTextFile(`song-ranker-results-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
-  status.textContent = "Download started.";
-}
-
-function exportRankingToCsv() {
-  const ranked = window.__lastRanked;
-  const status = document.getElementById("copy-status");
-  if (!ranked?.length) {
-    status.textContent = "Nothing to export.";
-    return;
-  }
-  const lines = ["rank,title,artists,album,url"];
-  ranked.forEach((t, i) => {
-    lines.push([i + 1, t.name, t.artists || "", t.album || "", t.url || ""].map(csvEscapeCell).join(","));
+    onProgress?.(`Loading playlist… ${out.length} songs`);
   });
-  downloadTextFile(`song-ranker-results-${Date.now()}.csv`, lines.join("\n"), "text/csv;charset=utf-8");
-  status.textContent = "Download started.";
+  return { tracks: dedupeSongs(out), label: meta.name || "Playlist", image: pickImage(meta.images) };
 }
 
-function encodeSharePayloadJson(obj) {
-  const json = JSON.stringify(obj);
-  const bytes = new TextEncoder().encode(json);
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+async function fetchAlbum(albumId) {
+  const meta = await api(`/albums/${encodeURIComponent(albumId)}`);
+  const out = [];
+  const push = (items) => {
+    for (const t of items) out.push(makeTrack(t, meta));
+  };
+  push(meta.tracks?.items || []);
+  if (meta.tracks?.next) await fetchPaged(meta.tracks.next, push);
+  return { tracks: dedupeSongs(out), label: meta.name || "Album", image: pickImage(meta.images) };
 }
 
-function buildSharePayloadFromState() {
-  const ranked = window.__lastRanked;
-  if (!ranked?.length) return null;
-  const meta = lastShareMeta || { topN: null, sourceLabel: rankingSourceLabel };
-  let goal = "full";
-  if (meta.topN != null && meta.topN < ranked.length && meta.topN >= 2) {
-    goal = meta.topN === 25 ? "top25" : meta.topN === 100 ? "top100" : `top${meta.topN}`;
+function getArtistCache(key) {
+  const data = readJson(LS_ARTIST_CACHE_PREFIX + key, null);
+  if (!data || data.v !== 2 || !Array.isArray(data.tracks)) return null;
+  if (Date.now() - (data.savedAt || 0) > ARTIST_CACHE_MAX_AGE_MS) {
+    localStorage.removeItem(LS_ARTIST_CACHE_PREFIX + key);
+    return null;
   }
+  return data;
+}
+
+function setArtistCache(key, payload) {
+  writeJson(LS_ARTIST_CACHE_PREFIX + key, { v: 2, savedAt: Date.now(), ...payload });
+}
+
+/**
+ * Artist discography: one call per 10 releases, then one per album. Albums are visited
+ * oldest-first so the original release of a song wins over later deluxe/compilation copies.
+ * Results are cached per artist for 30 days to avoid repeating the crawl.
+ */
+async function fetchArtist(artistId, includeSingles, onProgress) {
+  const cacheKey = `${artistId}:${includeSingles ? "all" : "albums"}`;
+  const cached = getArtistCache(cacheKey);
+  if (cached) return { tracks: cached.tracks, label: cached.label, image: cached.image, fromCache: true };
+
+  const artist = await api(`/artists/${encodeURIComponent(artistId)}`);
+  const groups = includeSingles ? "album,single" : "album";
+  const albums = [];
+  onProgress?.("Finding albums…");
+  await fetchPaged(
+    `/artists/${encodeURIComponent(artistId)}/albums?include_groups=${groups}&limit=10`,
+    (items) => albums.push(...items)
+  );
+  const groupRank = { album: 0, single: 1 };
+  albums.sort(
+    (a, b) =>
+      (groupRank[a.album_group || a.album_type] ?? 2) - (groupRank[b.album_group || b.album_type] ?? 2) ||
+      String(a.release_date || "").localeCompare(String(b.release_date || ""))
+  );
+
+  const out = [];
+  for (let i = 0; i < albums.length; i++) {
+    const album = albums[i];
+    onProgress?.(`Loading albums… ${i + 1} of ${albums.length}`);
+    if (i > 0) await sleep(SPOTIFY_GAP_MS);
+    await fetchPaged(`/albums/${encodeURIComponent(album.id)}/tracks?limit=50`, (items) => {
+      for (const t of items) {
+        if ((t.artists || []).some((a) => a.id === artistId)) out.push(makeTrack(t, album));
+      }
+    });
+  }
+  const result = { tracks: dedupeSongs(out), label: artist.name || "Artist", image: pickImage(artist.images) };
+  setArtistCache(cacheKey, result);
+  return result;
+}
+
+/* ------------------------------------------------------------------ */
+/* Storage: in-progress sessions & finished lists                      */
+/* ------------------------------------------------------------------ */
+
+function getSessions() {
+  const list = readJson(LS_SESSIONS, []);
+  return Array.isArray(list) ? list : [];
+}
+
+function setSessions(list) {
+  return writeJson(LS_SESSIONS, list);
+}
+
+function getSavedRankings() {
+  const list = readJson(LS_SAVED_RANKINGS, []);
+  return Array.isArray(list) ? list : [];
+}
+
+function setSavedRankings(list) {
+  return writeJson(LS_SAVED_RANKINGS, list);
+}
+
+/** Converts a pre-v2 progress snapshot (preference graph) into a v2 session. */
+function sessionFromLegacySnapshot(snap, name) {
+  if (!snap || snap.v !== 1 || !Array.isArray(snap.tracks) || snap.tracks.length < 2) return null;
+  const tracks = snap.tracks.map(({ previewUrl, ...t }) => t);
+  const n = tracks.length;
+  const topN = snap.rankingTopN && snap.rankingTopN >= 2 && snap.rankingTopN < n ? snap.rankingTopN : null;
+  return {
+    id: newId(),
+    label: name || snap.sourceLabel || `${n} songs`,
+    image: null,
+    createdAt: snap.savedAt || Date.now(),
+    updatedAt: snap.savedAt || Date.now(),
+    tracks,
+    state: { v: 2, order: tracks.map((t) => t.id), topN, log: "", legacyAdj: snap.adj || {} },
+  };
+}
+
+function migrateLegacyProgress() {
+  const migrated = [];
+  const auto = readJson(LS_LEGACY_AUTOSAVE, null);
+  const s = sessionFromLegacySnapshot(auto);
+  if (s) migrated.push(s);
+  for (const named of readJson(LS_LEGACY_NAMED, []) || []) {
+    const ns = sessionFromLegacySnapshot(named?.snapshot, named?.name);
+    if (ns) migrated.push(ns);
+  }
+  if (migrated.length && !setSessions([...getSessions(), ...migrated])) return;
+  localStorage.removeItem(LS_LEGACY_AUTOSAVE);
+  localStorage.removeItem(LS_LEGACY_NAMED);
+}
+
+/* ------------------------------------------------------------------ */
+/* Views                                                               */
+/* ------------------------------------------------------------------ */
+
+function showView(name) {
+  for (const v of ["home", "compare", "results"]) {
+    $(`view-${v}`).classList.toggle("hidden", v !== name);
+  }
+  if (name === "home") {
+    renderSessionList();
+    renderSavedRankingsList();
+  }
+  window.scrollTo({ top: 0 });
+}
+
+function artNode(src, className) {
+  const img = document.createElement("img");
+  img.className = className;
+  img.alt = "";
+  img.loading = "lazy";
+  if (src && safeHref(src)) img.src = src;
+  else img.classList.add("art-empty");
+  return img;
+}
+
+function renderSessionList() {
+  const sessions = getSessions().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const ul = $("session-list");
+  ul.replaceChildren();
+  $("continue-section").classList.toggle("hidden", sessions.length === 0);
+  for (const s of sessions) {
+    let progress = { done: 0, total: 0 };
+    try {
+      progress = new Ranker(structuredClone(s.state)).progress();
+    } catch {
+      /* corrupt session: still listed so it can be deleted */
+    }
+    const pct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
+    const li = document.createElement("li");
+    li.className = "session-item";
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "session-open";
+    open.addEventListener("click", () => resumeSession(s.id));
+    open.appendChild(artNode(s.image || s.tracks?.[0]?.image, "session-art"));
+    const text = document.createElement("span");
+    text.className = "session-text";
+    const title = document.createElement("span");
+    title.className = "session-title";
+    title.textContent = s.label;
+    const meta = document.createElement("span");
+    meta.className = "session-meta";
+    const goal = s.state.topN ? `Top ${s.state.topN} of ${s.tracks.length}` : plural(s.tracks.length, "song");
+    meta.textContent = `${goal} · ${progress.done} of ~${progress.total} picks`;
+    const bar = document.createElement("span");
+    bar.className = "mini-bar";
+    const fill = document.createElement("span");
+    fill.style.width = `${pct}%`;
+    bar.appendChild(fill);
+    text.append(title, meta, bar);
+    const cta = document.createElement("span");
+    cta.className = "session-cta";
+    cta.textContent = "Continue";
+    open.append(text, cta);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "icon-btn";
+    del.setAttribute("aria-label", `Delete ${s.label}`);
+    del.textContent = "✕";
+    del.addEventListener("click", () => {
+      if (!confirm(`Delete your in-progress ranking “${s.label}”?`)) return;
+      setSessions(getSessions().filter((x) => x.id !== s.id));
+      renderSessionList();
+    });
+
+    li.append(open, del);
+    ul.appendChild(li);
+  }
+}
+
+function renderSavedRankingsList() {
+  const list = getSavedRankings().sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+  const ul = $("saved-rankings-list");
+  ul.replaceChildren();
+  $("saved-rankings-empty").classList.toggle("hidden", list.length > 0);
+  for (const s of list) {
+    const li = document.createElement("li");
+    li.className = "saved-item";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "saved-open";
+    open.addEventListener("click", () => openSavedRanking(s.id));
+    open.appendChild(artNode(s.image || s.tracks?.[0]?.image, "saved-art"));
+    const text = document.createElement("span");
+    text.className = "session-text";
+    const title = document.createElement("span");
+    title.className = "session-title";
+    title.textContent = (s.name || "Untitled").slice(0, 120);
+    const meta = document.createElement("span");
+    meta.className = "session-meta";
+    const n = s.tracks?.length ?? 0;
+    const top = s.topN ? `Top ${n}` : plural(n, "song");
+    const lead = s.tracks?.[0]?.name ? ` · #1 ${s.tracks[0].name}` : "";
+    meta.textContent = `${top}${s.savedAt ? ` · ${formatDate(s.savedAt)}` : ""}${lead}`;
+    text.append(title, meta);
+    open.appendChild(text);
+
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "icon-btn";
+    del.setAttribute("aria-label", `Delete ${s.name || "list"}`);
+    del.textContent = "✕";
+    del.addEventListener("click", () => {
+      if (!confirm(`Delete “${s.name || "this list"}” from this device?`)) return;
+      setSavedRankings(getSavedRankings().filter((x) => x.id !== s.id));
+      renderSavedRankingsList();
+    });
+    li.append(open, del);
+    ul.appendChild(li);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Loading songs                                                       */
+/* ------------------------------------------------------------------ */
+
+/** Loaded but not yet started: { tracks, label, image }. */
+let readyLoad = null;
+let loadInFlight = false;
+
+function updateLoadButtonState() {
+  const hasUrl = ($("spotify-url").value || "").trim().length > 0;
+  $("btn-load").disabled = loadInFlight || !hasSpotifySession() || !hasUrl;
+  document.querySelectorAll(".btn-preset").forEach((b) => {
+    b.disabled = loadInFlight || !hasSpotifySession();
+  });
+}
+
+async function loadSource(kind, id) {
+  const status = $("load-status");
+  clearCountdown();
+  setStatus(status, "Loading…");
+  loadInFlight = true;
+  updateLoadButtonState();
+  const includeSingles = $("include-singles").checked;
+  const onProgress = (msg) => setStatus(status, msg);
+  try {
+    let loaded;
+    if (kind === "playlist") loaded = await fetchPlaylist(id, onProgress);
+    else if (kind === "album") loaded = await fetchAlbum(id);
+    else if (kind === "artist") loaded = await fetchArtist(id, includeSingles, onProgress);
+    else if (kind === "track") throw new Error("That’s a single song. Paste a playlist, album or artist link instead.");
+    else throw new Error("Unsupported link type.");
+    if (loaded.tracks.length < 2) throw new Error("Need at least two songs to rank.");
+    setStatus(status, "");
+    showReady(loaded);
+  } catch (e) {
+    if (e?.code === "SPOTIFY_429") {
+      showCountdown(
+        e.retryAfterSeconds,
+        "Spotify is rate limiting this app. Try again in {s}s. Albums and playlists need far fewer requests than whole artists.",
+        "You can try loading again now."
+      );
+    } else {
+      setStatus(status, e.message || String(e), true);
+    }
+  } finally {
+    loadInFlight = false;
+    updateLoadButtonState();
+  }
+}
+
+function showReady(loaded) {
+  readyLoad = loaded;
+  const n = loaded.tracks.length;
+  $("new-section").classList.remove("hidden");
+  $("load-form").classList.add("hidden");
+  $("ready-card").classList.remove("hidden");
+  const art = $("ready-art");
+  const src = loaded.image || loaded.tracks[0]?.image;
+  art.classList.toggle("hidden", !src);
+  if (src) art.src = src;
+  $("ready-title").textContent = loaded.label;
+  $("ready-meta").textContent = `${plural(n, "song")} loaded${loaded.fromCache ? " (saved on this device)" : ""}. How far do you want to go?`;
+
+  const wrap = $("goal-buttons");
+  wrap.replaceChildren();
+  const goals = [{ topN: null, title: `Rank all ${n}` }];
+  // Only offer a top-N goal when it saves a meaningful number of picks.
+  const full = estimateComparisons(n, null);
+  for (const topN of [25, 100]) {
+    if (n > topN && estimateComparisons(n, topN) < full * 0.8) {
+      goals.push({ topN, title: `Find my top ${topN}` });
+    }
+  }
+  for (const g of goals) {
+    const picks = estimateComparisons(n, g.topN);
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = `goal-btn${g.topN == null ? " goal-primary" : ""}`;
+    const t = document.createElement("span");
+    t.className = "goal-title";
+    t.textContent = g.title;
+    const m = document.createElement("span");
+    m.className = "goal-meta";
+    m.textContent = `about ${picks} picks · ~${Math.max(1, Math.round((picks * 4) / 60))} min`;
+    b.append(t, m);
+    b.addEventListener("click", () => startNewSession(loaded, g.topN));
+    wrap.appendChild(b);
+  }
+}
+
+function hideReady() {
+  readyLoad = null;
+  $("ready-card").classList.add("hidden");
+  $("load-form").classList.remove("hidden");
+  $("new-section").classList.toggle("hidden", !hasSpotifySession());
+}
+
+/* ------------------------------------------------------------------ */
+/* Ranking                                                             */
+/* ------------------------------------------------------------------ */
+
+/** The ranking on screen: { session, ranker, byId }. */
+let active = null;
+let saveTimer = null;
+
+function startNewSession(loaded, topN) {
+  const state = createSession(
+    loaded.tracks.map((t) => t.id),
+    topN
+  );
+  const session = {
+    id: newId(),
+    label: loaded.label,
+    image: loaded.image || null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    tracks: loaded.tracks,
+    state,
+  };
+  if (!setSessions([...getSessions(), session])) {
+    setStatus($("load-status"), "Couldn’t save on this device (storage full or blocked). Progress won’t be kept.", true);
+  }
+  hideReady();
+  $("spotify-url").value = "";
+  openSession(session);
+}
+
+function resumeSession(id) {
+  const s = getSessions().find((x) => x.id === id);
+  if (s) openSession(s);
+}
+
+function openSession(session) {
+  active = {
+    session,
+    ranker: new Ranker(session.state),
+    byId: new Map(session.tracks.map((t) => [t.id, t])),
+  };
+  $("compare-label").textContent = session.state.topN
+    ? `${session.label} · top ${session.state.topN}`
+    : session.label;
+  showView("compare");
+  renderCompare();
+}
+
+function persistActive(immediate = false) {
+  if (!active) return;
+  const write = () => {
+    saveTimer = null;
+    if (!active) return;
+    active.session.updatedAt = Date.now();
+    const list = getSessions().filter((x) => x.id !== active.session.id);
+    list.push(active.session);
+    setSessions(list);
+  };
+  if (saveTimer) clearTimeout(saveTimer);
+  if (immediate) write();
+  else saveTimer = setTimeout(write, 250);
+}
+
+function fillCard(side, track) {
+  $(`title-${side}`).textContent = track?.name || "Unknown song";
+  $(`meta-${side}`).textContent = [track?.artists, track?.album].filter(Boolean).join(" · ");
+  $(`card-${side}`).setAttribute("aria-label", `Choose ${track?.name || "this song"}`);
+  const img = $(`art-${side}`);
+  const src = track?.image && safeHref(track.image);
+  img.classList.toggle("art-empty", !src);
+  if (src) img.src = src;
+  else img.removeAttribute("src");
+  const slot = $(`embed-${side}`);
+  slot.replaceChildren();
+  const btn = $(`preview-${side}`);
+  btn.textContent = "▶ Preview";
+  btn.setAttribute("aria-expanded", "false");
+  btn.classList.toggle("hidden", !/^[A-Za-z0-9]+$/.test(track?.id || ""));
+}
+
+function togglePreview(side) {
+  const pair = active?.ranker.currentPair();
+  if (!pair) return;
+  const track = active.byId.get(side === "left" ? pair.left : pair.right);
+  const slot = $(`embed-${side}`);
+  const btn = $(`preview-${side}`);
+  if (slot.firstChild) {
+    slot.replaceChildren();
+    btn.textContent = "▶ Preview";
+    btn.setAttribute("aria-expanded", "false");
+    return;
+  }
+  const iframe = document.createElement("iframe");
+  iframe.className = "spotify-embed";
+  iframe.title = `Spotify player: ${track.name}`;
+  iframe.height = "80";
+  iframe.allow = "autoplay; clipboard-write; encrypted-media";
+  iframe.src = `https://open.spotify.com/embed/track/${encodeURIComponent(track.id)}?utm_source=generator&theme=0`;
+  slot.appendChild(iframe);
+  btn.textContent = "Hide player";
+  btn.setAttribute("aria-expanded", "true");
+}
+
+function renderCompare() {
+  if (!active) return;
+  const { ranker } = active;
+  if (ranker.isDone()) {
+    finishActive();
+    return;
+  }
+  const pair = ranker.currentPair();
+  fillCard("left", active.byId.get(pair.left));
+  fillCard("right", active.byId.get(pair.right));
+  const p = ranker.progress();
+  const pct = p.total ? Math.min(100, (p.done / p.total) * 100) : 0;
+  $("progress-fill").style.width = `${pct}%`;
+  const mins = Math.round((p.remaining * 4) / 60);
+  $("progress-text").textContent = `${p.done} of ~${p.total} picks${mins >= 1 ? ` · about ${mins} min left` : " · almost done"}`;
+  $("btn-undo").disabled = !ranker.canUndo();
+  $("btn-skip-pair").classList.toggle("hidden", !ranker.canSkip());
+}
+
+function choose(side) {
+  if (!active || active.ranker.isDone()) return;
+  const pair = active.ranker.currentPair();
+  active.ranker.choose(side === "left" ? pair.left : pair.right);
+  persistActive();
+  pulse(side);
+  renderCompare();
+}
+
+function pulse(side) {
+  const card = $(`card-${side}`);
+  card.classList.remove("picked");
+  void card.offsetWidth;
+  card.classList.add("picked");
+}
+
+function skipPair() {
+  if (!active?.ranker.canSkip()) return;
+  active.ranker.skip();
+  persistActive();
+  renderCompare();
+}
+
+function undoPick() {
+  if (!active?.ranker.canUndo()) return;
+  active.ranker.undo();
+  persistActive();
+  renderCompare();
+}
+
+function leaveCompare() {
+  persistActive(true);
+  active = null;
+  showView("home");
+}
+
+function finishActive() {
+  const { session, ranker, byId } = active;
+  const ranked = ranker.result().map((id) => byId.get(id)).filter(Boolean);
+  const topN = session.state.topN;
+  const entry = {
+    id: newId(),
+    name: `${session.label} — ${formatDate(Date.now())}`,
+    sourceLabel: session.label,
+    image: session.image || null,
+    savedAt: Date.now(),
+    topN: topN || null,
+    tracks: ranked,
+  };
+  // Keep the full song list for top-N results so "Rank again" can start from everything.
+  if (topN) entry.sourceTracks = session.tracks;
+  setSavedRankings([...getSavedRankings(), entry]);
+  setSessions(getSessions().filter((x) => x.id !== session.id));
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = null;
+  active = null;
+  showResults(entry, `Saved to Finished lists.`);
+}
+
+/* ------------------------------------------------------------------ */
+/* Results                                                             */
+/* ------------------------------------------------------------------ */
+
+/** Finished list on screen (an entry from LS_SAVED_RANKINGS). */
+let currentResult = null;
+
+function openSavedRanking(id) {
+  const found = getSavedRankings().find((s) => s.id === id);
+  if (found?.tracks?.length) showResults(found, "");
+}
+
+function showResults(entry, statusText) {
+  currentResult = entry;
+  $("save-name").value = entry.name || "";
+  const n = entry.tracks.length;
+  const of = entry.sourceTracks?.length;
+  $("results-meta").textContent = [
+    entry.topN && of ? `Top ${n} of ${of} songs` : plural(n, "song"),
+    entry.savedAt ? `ranked ${formatDate(entry.savedAt)}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  setStatus($("share-status"), statusText);
+  $("export-menu").open = false;
+  renderRankedList(entry.tracks);
+  showView("results");
+}
+
+function renderRankedList(ranked) {
+  const ol = $("ranked-list");
+  ol.replaceChildren();
+  ranked.forEach((t, idx) => {
+    const li = document.createElement("li");
+    li.className = idx < 3 ? `ranked-item podium podium-${idx + 1}` : "ranked-item";
+    const num = document.createElement("span");
+    num.className = "rank-num";
+    num.textContent = String(idx + 1);
+    const text = document.createElement("span");
+    text.className = "rank-text";
+    const href = safeHref(t.url);
+    const title = document.createElement(href ? "a" : "span");
+    title.className = "rank-title";
+    title.textContent = t.name;
+    if (href) {
+      title.href = href;
+      title.target = "_blank";
+      title.rel = "noopener";
+    }
+    const meta = document.createElement("span");
+    meta.className = "rank-meta";
+    meta.textContent = [t.artists, t.album].filter(Boolean).join(" · ");
+    text.append(title, meta);
+    li.append(num, artNode(t.image, "rank-art"), text);
+    ol.appendChild(li);
+  });
+}
+
+function renameCurrentResult() {
+  if (!currentResult) return;
+  const name = $("save-name").value.trim() || currentResult.sourceLabel || "Untitled";
+  currentResult.name = name;
+  setSavedRankings(getSavedRankings().map((s) => (s.id === currentResult.id ? { ...s, name } : s)));
+}
+
+function buildSharePayload() {
+  if (!currentResult) return null;
+  const r = currentResult;
   return {
     v: 1,
-    title: String(meta.sourceLabel || "Song ranking").slice(0, 200),
-    createdAt: Date.now(),
-    goal,
-    tracks: ranked.map((t, i) => ({
+    title: String(r.name || r.sourceLabel || "Song ranking").slice(0, 200),
+    createdAt: r.savedAt || Date.now(),
+    goal: r.topN ? `top${r.topN}` : "full",
+    tracks: r.tracks.map((t, i) => ({
       rank: i + 1,
       name: t.name,
       artists: t.artists || "",
@@ -1360,1133 +1078,326 @@ function buildSharePayloadFromState() {
   };
 }
 
+function encodeSharePayload(obj) {
+  const bytes = new TextEncoder().encode(JSON.stringify(obj));
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 async function copyShareLink() {
-  const el = document.getElementById("share-status");
-  const payload = buildSharePayloadFromState();
-  if (!payload) {
-    if (el) el.textContent = "Nothing to share yet.";
-    return;
-  }
-  const enc = encodeSharePayloadJson(payload);
-  const url = `${new URL("viewer.html", window.location.href).href}#d=${enc}`;
+  const el = $("share-status");
+  const payload = buildSharePayload();
+  if (!payload) return;
+  const url = `${new URL("viewer.html", location.href).href}#d=${encodeSharePayload(payload)}`;
   if (url.length > 48000) {
-    if (el) el.textContent = "This list is too large for a link. Use Download HTML instead.";
+    setStatus(el, "This list is too long for a link. Use Export → Download web page instead.");
     return;
   }
   try {
     await navigator.clipboard.writeText(url);
-    if (el) el.textContent = "Link copied. Anyone can open it — no Spotify login.";
+    setStatus(el, "Link copied. Anyone can open it, no Spotify needed.");
   } catch {
-    if (el) el.textContent = "Could not copy. Try Download HTML or copy from the address bar.";
+    setStatus(el, "Couldn’t copy. Try Export → Download web page.", true);
   }
 }
 
-async function downloadShareableStandaloneHtml() {
-  const payload = buildSharePayloadFromState();
-  const el = document.getElementById("share-status");
-  if (!payload) {
-    if (el) el.textContent = "Nothing to share yet.";
-    return;
-  }
-  const safe = JSON.stringify(payload).replace(/</g, "\\u003c");
-  const inject = `<script type="application/json" id="sr-data">${safe}<\/script>\n`;
+async function downloadSharePage() {
+  const el = $("share-status");
+  const payload = buildSharePayload();
+  if (!payload) return;
+  const inject = `<script type="application/json" id="sr-data">${JSON.stringify(payload).replace(/</g, "\\u003c")}<\/script>\n`;
   try {
-    const res = await fetch(new URL("viewer.html", window.location.href));
+    const res = await fetch(new URL("viewer.html", location.href));
     if (!res.ok) throw new Error("fetch");
-    let html = await res.text();
-    html = html.replace("<head>", `<head>\n${inject}`);
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `song-rank-share-${Date.now()}.html`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    if (el) el.textContent = "Saved. Open or host the file — works offline.";
+    const html = (await res.text()).replace("<head>", `<head>\n${inject}`);
+    downloadTextFile(`song-ranking-${Date.now()}.html`, html, "text/html;charset=utf-8");
+    setStatus(el, "Downloaded. The file works offline.");
   } catch {
-    if (el) el.textContent = "Could not build file. Serve the app over http(s), not file://.";
+    setStatus(el, "Couldn’t build the page. Open the app over http(s), not as a file.", true);
   }
 }
 
-function setDeferButtonVisible(show) {
-  document.getElementById("btn-skip-pair")?.classList.toggle("hidden", !show);
-  document.getElementById("skip-hint")?.classList.toggle("hidden", !show);
+function copyAsText() {
+  const lines = currentResult.tracks.map(
+    (t, i) => `${i + 1}. ${t.name}${t.artists ? ` — ${t.artists}` : ""}`
+  );
+  navigator.clipboard.writeText(lines.join("\n")).then(
+    () => setStatus($("share-status"), "Copied to clipboard."),
+    () => setStatus($("share-status"), "Couldn’t copy (permission denied).", true)
+  );
 }
 
-function getRankingModeFromUI(trackCount) {
-  const sel = document.getElementById("ranking-mode");
-  const v = sel?.value ?? "full";
-  if (v === "full") return { topN: null };
-  const n = parseInt(v, 10);
-  if (!Number.isFinite(n) || n < 2) return { topN: null };
-  if (n >= trackCount) return { topN: null };
-  return { topN: n };
+function csvCell(s) {
+  const t = s == null ? "" : String(s);
+  return /[",\n\r]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t;
 }
 
-function syncRankingModeSelect(topN, trackCount) {
-  const sel = document.getElementById("ranking-mode");
-  if (!sel) return;
-  if (topN == null || topN < 2 || topN >= trackCount) {
-    sel.value = "full";
-    return;
-  }
-  if (topN === 25) sel.value = "25";
-  else if (topN === 100) sel.value = "100";
-  else sel.value = "full";
+function exportCsv() {
+  const lines = ["rank,title,artists,album,url"];
+  currentResult.tracks.forEach((t, i) => {
+    lines.push([i + 1, t.name, t.artists, t.album, t.url].map(csvCell).join(","));
+  });
+  downloadTextFile(`song-ranking-${Date.now()}.csv`, lines.join("\n"), "text/csv;charset=utf-8");
 }
 
-function getExperienceFromUI() {
-  return document.getElementById("compare-experience")?.value === "blind";
+function exportJson() {
+  const payload = {
+    v: 1,
+    type: "song_ranker_result",
+    name: currentResult.name,
+    exportedAt: new Date().toISOString(),
+    tracks: currentResult.tracks,
+  };
+  downloadTextFile(`song-ranking-${Date.now()}.json`, JSON.stringify(payload, null, 2), "application/json");
 }
 
-function syncExperienceSelect(blind) {
-  const sel = document.getElementById("compare-experience");
-  if (!sel) return;
-  sel.value = blind ? "blind" : "standard";
+function rankAgain() {
+  if (!currentResult) return;
+  const tracks = currentResult.sourceTracks || currentResult.tracks;
+  startNewSession(
+    { tracks, label: currentResult.sourceLabel || currentResult.name, image: currentResult.image },
+    currentResult.topN || null
+  );
 }
 
-async function rankWithPartialOrder(tracks, options = {}) {
-  let topN = options.topN;
-  if (topN != null && (topN >= tracks.length || topN < 2)) topN = null;
-
-  function getIncomparablePairs() {
-    if (!topN) return findIncomparablePairs(tracks);
-    const active = getActiveTracksForTopN(tracks, topN);
-    return findIncomparablePairs(active);
-  }
-
-  function finishTopNIfComplete() {
-    if (!topN) return null;
-    const active = getActiveTracksForTopN(tracks, topN);
-    if (active.length === 0) {
-      throw new Error("Could not determine a top list — try again.");
-    }
-    const ranked = extractRankingSubset(active);
-    return ranked.slice(0, topN);
-  }
-
-  for (;;) {
-    if (rankingAbortRequested) {
-      rankingAbortRequested = false;
-      throw Object.assign(new Error("Left ranking"), { code: "ABORT" });
-    }
-    let a;
-    let b;
-    let canDefer;
-    if (undoForcedPair) {
-      [a, b] = undoForcedPair;
-      undoForcedPair = null;
-      const incomparable = getIncomparablePairs();
-      if (incomparable.length === 0) {
-        if (topN) return finishTopNIfComplete();
-        return extractRanking(tracks);
-      }
-      canDefer = incomparable.length > 1;
-    } else {
-      const incomparable = getIncomparablePairs();
-      if (incomparable.length === 0) {
-        if (topN) return finishTopNIfComplete();
-        return extractRanking(tracks);
-      }
-      [a, b] = pickNextPair(incomparable);
-      canDefer = incomparable.length > 1;
-    }
-    const key = pairKey(a, b);
-    const cmp = await compareTracks(a, b, canDefer);
-    if (cmp === CMP_ABORT) {
-      throw Object.assign(new Error("Left ranking"), { code: "ABORT" });
-    }
-    if (cmp === CMP_UNDO) {
-      continue;
-    }
-    if (cmp === 0) {
-      if (canDefer) {
-        rankingDeferredCounts.set(key, (rankingDeferredCounts.get(key) || 0) + 1);
-        scheduleProgressAutosave();
-        continue;
-      }
-      const tie = Math.random() < 0.5 ? -1 : 1;
-      if (tie < 0) {
-        recordPreference(a.id, b.id);
-        pushChoice(a.id, b.id, a, b);
-      } else {
-        recordPreference(b.id, a.id);
-        pushChoice(b.id, a.id, a, b);
-      }
-    } else if (cmp < 0) {
-      recordPreference(a.id, b.id);
-      pushChoice(a.id, b.id, a, b);
-    } else {
-      recordPreference(b.id, a.id);
-      pushChoice(b.id, a.id, a, b);
-    }
-    scheduleProgressAutosave();
-  }
-}
-
-function newSaveId() {
-  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
-  return `s-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
-
-function getSavedRankings() {
-  try {
-    const raw = localStorage.getItem(LS_SAVED_RANKINGS);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
-}
-
-function setSavedRankings(list) {
-  localStorage.setItem(LS_SAVED_RANKINGS, JSON.stringify(list));
-}
-
-function renderSavedRankingsList() {
-  const ul = document.getElementById("saved-rankings-list");
-  const emptyEl = document.getElementById("saved-rankings-empty");
-  if (!ul) return;
-  const list = getSavedRankings();
-  const sorted = [...list].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
-  ul.innerHTML = "";
-  if (emptyEl) emptyEl.classList.toggle("hidden", sorted.length > 0);
-
-  for (const s of sorted) {
-    const li = document.createElement("li");
-    li.className = "saved-ranking-item";
-    const n = s.tracks?.length ?? 0;
-    const name = (s.name || "Untitled").slice(0, 120);
-    const date = s.savedAt
-      ? new Date(s.savedAt).toLocaleDateString(undefined, { dateStyle: "medium" })
-      : "";
-    const metaBits = [`${n} song${n === 1 ? "" : "s"}`];
-    if (date) metaBits.push(date);
-    const meta = metaBits.join(" · ");
-
-    const openBtn = document.createElement("button");
-    openBtn.type = "button";
-    openBtn.className = "saved-ranking-open";
-    openBtn.dataset.id = s.id;
-    const title = document.createElement("span");
-    title.className = "saved-ranking-name";
-    title.textContent = name;
-    const sub = document.createElement("span");
-    sub.className = "saved-ranking-meta";
-    sub.textContent = meta;
-    openBtn.appendChild(title);
-    openBtn.appendChild(sub);
-
-    const delBtn = document.createElement("button");
-    delBtn.type = "button";
-    delBtn.className = "btn secondary saved-ranking-delete";
-    delBtn.dataset.id = s.id;
-    delBtn.setAttribute("aria-label", `Remove ${name}`);
-    delBtn.textContent = "Remove";
-
-    li.appendChild(openBtn);
-    li.appendChild(delBtn);
-    ul.appendChild(li);
-  }
-}
+/* ------------------------------------------------------------------ */
+/* Online backup (Supabase, optional)                                  */
+/* ------------------------------------------------------------------ */
 
 let supabaseClient = null;
 
-function collectPresetCachesForSync() {
-  const out = {};
-  try {
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      if (!k || !k.startsWith(LS_PRESET_CACHE_PREFIX)) continue;
-      const artistId = k.slice(LS_PRESET_CACHE_PREFIX.length);
-      const raw = localStorage.getItem(k);
-      if (!raw) continue;
-      try {
-        const parsed = JSON.parse(raw);
-        if (parsed && parsed.v === 1 && Array.isArray(parsed.tracks)) {
-          out[artistId] = parsed;
-        }
-      } catch {
-        /* skip bad entry */
-      }
-    }
-  } catch {
-    /* private mode */
-  }
-  return out;
+function getSyncPayload() {
+  return { v: 2, savedRankings: getSavedRankings(), sessions: getSessions() };
 }
 
-/** Merge remote preset caches into localStorage (newer savedAt wins per artist). */
-function mergePresetCachesFromCloud(presetCaches) {
-  if (!presetCaches || typeof presetCaches !== "object") return;
-  for (const [artistId, entry] of Object.entries(presetCaches)) {
-    if (!entry || entry.v !== 1 || !Array.isArray(entry.tracks)) continue;
-    const localKey = LS_PRESET_CACHE_PREFIX + artistId;
-    let localSavedAt = 0;
-    try {
-      const prev = localStorage.getItem(localKey);
-      if (prev) localSavedAt = JSON.parse(prev).savedAt || 0;
-    } catch {
-      localSavedAt = 0;
-    }
-    const remoteSavedAt = typeof entry.savedAt === "number" ? entry.savedAt : 0;
-    if (remoteSavedAt >= localSavedAt) {
-      try {
-        localStorage.setItem(localKey, JSON.stringify(entry));
-      } catch {
-        /* quota */
-      }
-    }
-  }
-}
-
-function getLocalSyncPayload() {
-  return {
-    v: 1,
-    savedRankings: JSON.parse(localStorage.getItem(LS_SAVED_RANKINGS) || "[]"),
-    namedProgress: JSON.parse(localStorage.getItem(LS_PROGRESS_NAMED) || "[]"),
-    autosave: localStorage.getItem(LS_PROGRESS_AUTOSAVE),
-    presetCaches: collectPresetCachesForSync(),
-  };
-}
-
-function applyCloudPayload(obj) {
-  if (!obj || obj.v !== 1) throw new Error("That online backup isn’t valid.");
-  localStorage.setItem(LS_SAVED_RANKINGS, JSON.stringify(Array.isArray(obj.savedRankings) ? obj.savedRankings : []));
-  localStorage.setItem(LS_PROGRESS_NAMED, JSON.stringify(Array.isArray(obj.namedProgress) ? obj.namedProgress : []));
-  if (obj.autosave && typeof obj.autosave === "string") {
-    localStorage.setItem(LS_PROGRESS_AUTOSAVE, obj.autosave);
+function applySyncPayload(obj) {
+  if (!obj || (obj.v !== 1 && obj.v !== 2)) throw new Error("That online backup isn’t valid.");
+  setSavedRankings(Array.isArray(obj.savedRankings) ? obj.savedRankings : []);
+  if (obj.v === 2) {
+    setSessions(Array.isArray(obj.sessions) ? obj.sessions : []);
   } else {
-    localStorage.removeItem(LS_PROGRESS_AUTOSAVE);
+    const migrated = [];
+    if (typeof obj.autosave === "string") {
+      const s = sessionFromLegacySnapshot(JSON.parse(obj.autosave));
+      if (s) migrated.push(s);
+    }
+    for (const named of obj.namedProgress || []) {
+      const s = sessionFromLegacySnapshot(named?.snapshot, named?.name);
+      if (s) migrated.push(s);
+    }
+    setSessions(migrated);
   }
-  mergePresetCachesFromCloud(obj.presetCaches);
+  renderSessionList();
   renderSavedRankingsList();
-  refreshProgressPicker();
+}
+
+async function ensureSupabaseSession() {
+  let {
+    data: { session },
+  } = await supabaseClient.auth.getSession();
+  if (!session) {
+    const { error } = await supabaseClient.auth.signInAnonymously();
+    if (error) throw error;
+    ({
+      data: { session },
+    } = await supabaseClient.auth.getSession());
+  }
+  if (!session?.user?.id) throw new Error("Couldn’t connect to online backup.");
+  return session;
 }
 
 async function initCloudSync() {
-  const url = (typeof window.SONG_RANKER_SUPABASE_URL === "string" ? window.SONG_RANKER_SUPABASE_URL : "").trim();
-  const key = (typeof window.SONG_RANKER_SUPABASE_ANON_KEY === "string" ? window.SONG_RANKER_SUPABASE_ANON_KEY : "").trim();
-  const cloudPanel = document.getElementById("cloud-panel");
-  const statusEl = document.getElementById("cloud-status");
-  const syncBtn = document.getElementById("btn-cloud-sync");
-  const restoreBtn = document.getElementById("btn-cloud-restore");
-
-  const setStatus = (text, isErr) => {
-    if (!statusEl) return;
-    statusEl.textContent = text;
-    statusEl.classList.toggle("error", !!isErr);
-  };
-
-  const disableCloud = (msg) => {
-    setStatus(msg, false);
-    if (syncBtn) syncBtn.disabled = true;
-    if (restoreBtn) restoreBtn.disabled = true;
-  };
-
-  if (!url || !key) {
-    return;
-  }
-
-  if (cloudPanel) cloudPanel.classList.remove("hidden");
-
-  if (window.location.protocol === "file:") {
-    disableCloud("Save online works when this site is opened in the browser (not as a downloaded file).");
-    return;
-  }
-
+  const url = String(window.SONG_RANKER_SUPABASE_URL || "").trim();
+  const key = String(window.SONG_RANKER_SUPABASE_ANON_KEY || "").trim();
+  if (!url || !key || location.protocol === "file:") return;
+  const statusEl = $("cloud-status");
+  const syncBtn = $("btn-cloud-sync");
+  const restoreBtn = $("btn-cloud-restore");
+  $("cloud-panel").classList.remove("hidden");
+  setStatus(statusEl, "Connecting…");
   try {
     const mod = await import("https://esm.sh/@supabase/supabase-js@2.49.1");
     supabaseClient = mod.createClient(url, key, {
       auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false },
     });
+    await ensureSupabaseSession();
   } catch (e) {
-    disableCloud("Couldn’t load online backup. Try again later.");
     console.warn(e);
+    setStatus(statusEl, "Online backup isn’t reachable right now.", true);
     return;
   }
+  setStatus(statusEl, "Back up your lists and in-progress rankings so you can restore them on another device.");
+  syncBtn.disabled = false;
+  restoreBtn.disabled = false;
 
-  try {
-    const { data: { session } } = await supabaseClient.auth.getSession();
-    if (!session) {
-      const { error } = await supabaseClient.auth.signInAnonymously();
-      if (error) {
-        setStatus("Online backup isn’t available right now. Try again later.", true);
-        console.warn(error);
-        if (syncBtn) syncBtn.disabled = true;
-        if (restoreBtn) restoreBtn.disabled = true;
-        return;
-      }
-    }
-    setStatus(
-      "Your saves and Quick start caches can be stored online so you can get them back on another device."
-    );
-  } catch (e) {
-    setStatus("Online backup isn’t available right now. Try again later.", true);
-    console.warn(e);
-    if (syncBtn) syncBtn.disabled = true;
-    if (restoreBtn) restoreBtn.disabled = true;
-    return;
-  }
-
-  if (syncBtn) syncBtn.disabled = false;
-  if (restoreBtn) restoreBtn.disabled = false;
-
-  const wireOnce = (el, fn) => {
-    if (!el || el.dataset.cloudWired) return;
-    el.dataset.cloudWired = "1";
-    el.addEventListener("click", fn);
-  };
-
-  wireOnce(syncBtn, async () => {
-    const st = document.getElementById("cloud-status");
+  syncBtn.addEventListener("click", async () => {
     try {
-      if (st) {
-        st.textContent = "Uploading…";
-        st.classList.remove("error");
-      }
-      let { data: { session } } = await supabaseClient.auth.getSession();
-      if (!session) {
-        const { error } = await supabaseClient.auth.signInAnonymously();
-        if (error) throw error;
-        ({ data: { session } } = await supabaseClient.auth.getSession());
-      }
-      const uid = session?.user?.id;
-      if (!uid) throw new Error("Not signed in.");
-      const payload = getLocalSyncPayload();
+      setStatus(statusEl, "Uploading…");
+      const session = await ensureSupabaseSession();
       const { error } = await supabaseClient.from("song_ranker_sync").upsert(
-        {
-          user_id: uid,
-          data: payload,
-          updated_at: new Date().toISOString(),
-        },
+        { user_id: session.user.id, data: getSyncPayload(), updated_at: new Date().toISOString() },
         { onConflict: "user_id" }
       );
       if (error) throw error;
-      if (st) {
-        st.textContent = "Saved online.";
-        st.classList.remove("error");
-      }
+      setStatus(statusEl, "Backed up.");
     } catch (e) {
-      if (st) {
-        st.textContent = e.message || String(e);
-        st.classList.add("error");
-      }
+      setStatus(statusEl, e.message || String(e), true);
     }
   });
 
-  wireOnce(restoreBtn, async () => {
-    const st = document.getElementById("cloud-status");
+  restoreBtn.addEventListener("click", async () => {
+    if (!confirm("Replace this device’s lists and in-progress rankings with your online backup?")) return;
     try {
-      if (!confirm("Replace this device’s saved lists and sessions with your online copy?")) return;
-      if (st) {
-        st.textContent = "Downloading…";
-        st.classList.remove("error");
-      }
-      let { data: { session } } = await supabaseClient.auth.getSession();
-      if (!session) {
-        const { error } = await supabaseClient.auth.signInAnonymously();
-        if (error) throw error;
-        ({ data: { session } } = await supabaseClient.auth.getSession());
-      }
-      if (!session?.user?.id) throw new Error("Not signed in.");
+      setStatus(statusEl, "Downloading…");
+      await ensureSupabaseSession();
       const { data, error } = await supabaseClient.from("song_ranker_sync").select("data").maybeSingle();
       if (error) throw error;
-      if (!data?.data) throw new Error("Nothing saved online yet.");
-      applyCloudPayload(data.data);
-      if (st) {
-        st.textContent = "Restored from online backup.";
-        st.classList.remove("error");
-      }
+      if (!data?.data) throw new Error("Nothing backed up yet.");
+      applySyncPayload(data.data);
+      setStatus(statusEl, "Restored.");
     } catch (e) {
-      if (st) {
-        st.textContent = e.message || String(e);
-        st.classList.add("error");
-      }
+      setStatus(statusEl, e.message || String(e), true);
     }
   });
 }
 
-function renderRankedList(ranked) {
-  const ol = document.getElementById("ranked-list");
-  if (!ol) return;
-  ol.innerHTML = "";
-  ranked.forEach((t, idx) => {
-    const li = document.createElement("li");
-    const a = document.createElement("a");
-    a.href = t.url || "#";
-    a.target = "_blank";
-    a.rel = "noopener";
-    a.textContent = `${idx + 1}. ${t.name}${t.artists ? ` — ${t.artists}` : ""}`;
-    li.appendChild(a);
-    ol.appendChild(li);
-  });
-}
-
-function applySaveNameSuggestion() {
-  const inp = document.getElementById("save-name");
-  if (!inp) return;
-  const dateStr = new Date().toLocaleDateString(undefined, { dateStyle: "medium" });
-  if (rankingSourceLabel) {
-    inp.value = `${rankingSourceLabel} — ${dateStr}`;
-  } else {
-    inp.value = "";
-    inp.placeholder = `Ranking — ${dateStr}`;
-  }
-}
-
-function saveCurrentRanking() {
-  const ranked = window.__lastRanked;
-  const status = document.getElementById("copy-status");
-  if (!ranked?.length) {
-    status.textContent = "Nothing to save.";
-    return;
-  }
-  let name = (document.getElementById("save-name")?.value || "").trim();
-  const dateStr = new Date().toLocaleDateString(undefined, { dateStyle: "medium" });
-  if (!name) {
-    name = rankingSourceLabel ? `${rankingSourceLabel} — ${dateStr}` : `Ranking ${new Date().toLocaleString()}`;
-  }
-  const list = getSavedRankings();
-  const entry = {
-    id: newSaveId(),
-    name,
-    savedAt: Date.now(),
-    tracks: ranked.map((t) => ({ ...t })),
-  };
-  if (rankingSourceLabel) entry.sourceLabel = rankingSourceLabel;
-  list.push(entry);
-  try {
-    setSavedRankings(list);
-    renderSavedRankingsList();
-    status.textContent = "Saved on this device.";
-    const sn = document.getElementById("save-name");
-    if (sn) sn.value = "";
-  } catch {
-    status.textContent = "Could not save (storage blocked or full).";
-  }
-}
-
-function loadSavedById(id) {
-  const status = document.getElementById("saved-rankings-status");
-  const found = getSavedRankings().find((s) => s.id === id);
-  if (!found?.tracks?.length) {
-    if (status) {
-      status.textContent = "Could not load that list.";
-      status.classList.add("error");
-    }
-    return;
-  }
-  const ranked = found.tracks.map((t) => ({ ...t }));
-  window.__lastRanked = ranked;
-  rankingSourceLabel = found.sourceLabel || guessLabelFromTracks(found.tracks);
-  lastShareMeta = { topN: null, sourceLabel: rankingSourceLabel };
-  renderRankedList(ranked);
-  applySaveNameSuggestion();
-  showComparePanel(false);
-  showResultsPanel(true);
-  document.getElementById("panel-setup")?.classList.add("hidden");
-  if (status) {
-    status.textContent = "";
-    status.classList.remove("error");
-  }
-  document.getElementById("copy-status").textContent = "";
-}
-
-function deleteSavedById(id) {
-  const status = document.getElementById("saved-rankings-status");
-  if (!confirm("Delete this ranking from this device?")) return;
-  const next = getSavedRankings().filter((s) => s.id !== id);
-  setSavedRankings(next);
-  renderSavedRankingsList();
-  if (status) {
-    status.textContent = "Deleted.";
-    status.classList.remove("error");
-  }
-}
-
-function updateUndoButton() {
-  const btn = document.getElementById("btn-undo");
-  if (!btn) return;
-  btn.disabled = !(choiceHistory.length > 0 && pendingResolve);
-}
-
-async function compareTracks(a, b, canDefer = true) {
-  pendingPairForSave = [a.id, b.id];
-  if (currentBlindMode && (await refreshAccessTokenIfNeeded())) {
-    try {
-      await enrichTracksWithPreviews([a, b]);
-    } catch (_) {
-      /* renderPair still shows embed/no-preview affordances */
-    }
-  }
-  return new Promise((resolve) => {
-    pendingResolve = (value) => {
-      if (value !== 0 && value !== CMP_UNDO && value !== CMP_ABORT) compareStep += 1;
-      updateProgress();
-      resolve(value);
-    };
-    setDeferButtonVisible(canDefer);
-    renderPair(a, b);
-    updateUndoButton();
-  });
-}
-
-function wireCompareCards() {
-  const cardA = document.getElementById("card-a");
-  const cardB = document.getElementById("card-b");
-  cardA?.addEventListener("click", (e) => {
-    e.preventDefault();
-    if (!pendingResolve) return;
-    const r = pendingResolve;
-    pendingResolve = null;
-    r(-1);
-  });
-  cardB?.addEventListener("click", (e) => {
-    e.preventDefault();
-    if (!pendingResolve) return;
-    const r = pendingResolve;
-    pendingResolve = null;
-    r(1);
-  });
-  document.getElementById("btn-skip-pair")?.addEventListener("click", (e) => {
-    e.preventDefault();
-    if (!pendingResolve) return;
-    const r = pendingResolve;
-    pendingResolve = null;
-    r(0);
-  });
-  document.getElementById("btn-undo")?.addEventListener("click", (e) => {
-    e.preventDefault();
-    if (!pendingResolve || choiceHistory.length === 0) return;
-    const last = choiceHistory.pop();
-    removePreferenceEdge(last.winnerId, last.loserId);
-    compareStep = Math.max(0, compareStep - 1);
-    updateProgress();
-    undoForcedPair = [last.a, last.b];
-    const r = pendingResolve;
-    pendingResolve = null;
-    r(CMP_UNDO);
-    scheduleProgressAutosave();
-  });
-}
-
-async function runRanking(tracks, options = {}) {
-  const resume = options.resumeSnapshot;
-  if (!resume && (!tracks || tracks.length === 0)) return;
-  if (resume && (!resume.tracks || resume.tracks.length < 2)) return;
-
-  lastShareMeta = null;
-  rankingAbortRequested = false;
-  let order;
-  if (resume) {
-    order = resume.tracks.map((t) => ({ ...t }));
-    applyResumeSnapshot(resume, order);
-    currentRankingOrder = order;
-  } else {
-    order = [...tracks];
-    shuffleInPlace(order);
-    resetPreferenceGraph();
-    compareStep = 0;
-    currentBlindMode = options.blindMode !== undefined ? !!options.blindMode : getExperienceFromUI();
-    let effTop =
-      options.topN !== undefined ? options.topN : getRankingModeFromUI(order.length).topN;
-    if (effTop != null) {
-      effTop = Math.min(Math.floor(effTop), order.length);
-      if (effTop < 2 || effTop >= order.length) effTop = null;
-    }
-    currentRankingTopN = effTop;
-    compareEstimate =
-      currentRankingTopN != null
-        ? estimateTopNComparisons(order.length, currentRankingTopN)
-        : estimateMergeComparisons(order.length);
-    if (options.topN !== undefined) syncRankingModeSelect(currentRankingTopN, order.length);
-    currentRankingOrder = order;
-    const sl = options.sourceLabel;
-    rankingSourceLabel =
-      sl != null && String(sl).trim() !== "" ? String(sl).trim() : guessLabelFromTracks(order);
-  }
-
-  updateProgress();
-  showComparePanel(true);
-  showResultsPanel(false);
-
-  try {
-    const ranked = await rankWithPartialOrder(order, { topN: currentRankingTopN });
-    if (options.presetCacheArtistId) {
-      setPresetTracksCache(options.presetCacheArtistId, order);
-    }
-    lastShareMeta = { topN: currentRankingTopN, sourceLabel: rankingSourceLabel };
-    showComparePanel(false);
-    showResultsPanel(true);
-    window.__lastRanked = ranked;
-    const hint = document.getElementById("results-mode-hint");
-    if (hint) {
-      if (currentRankingTopN != null && currentRankingTopN < order.length) {
-        hint.textContent = `Goal: top ${currentRankingTopN} (of ${order.length} loaded).`;
-        hint.classList.remove("hidden");
-      } else {
-        hint.textContent = "";
-        hint.classList.add("hidden");
-      }
-    }
-    renderRankedList(ranked);
-    applySaveNameSuggestion();
-    clearProgressAutosave();
-  } catch (e) {
-    if (e && e.code === "ABORT") {
-      showComparePanel(false);
-      showResultsPanel(false);
-      document.getElementById("panel-setup")?.classList.remove("hidden");
-      const st = document.getElementById("load-status");
-      if (st) {
-        st.textContent = "";
-        st.classList.remove("error");
-      }
-      return;
-    }
-    showComparePanel(false);
-    showResultsPanel(false);
-    document.getElementById("panel-setup")?.classList.remove("hidden");
-    const st = document.getElementById("load-status");
-    if (st) {
-      st.textContent = e.message || String(e);
-      st.classList.add("error");
-    }
-  } finally {
-    rankingAbortRequested = false;
-    currentRankingOrder = null;
-    pendingPairForSave = null;
-    currentRankingTopN = null;
-    currentBlindMode = false;
-  }
-}
-
-function backToLanding() {
-  const resultsPanel = document.getElementById("panel-results");
-  const comparePanel = document.getElementById("panel-compare");
-  const resultsVisible = resultsPanel && !resultsPanel.classList.contains("hidden");
-  const compareVisible = comparePanel && !comparePanel.classList.contains("hidden");
-
-  if (compareVisible) {
-    if (pendingResolve) {
-      if (
-        !confirm(
-          "Leave this ranking? Your place is saved—you can tap Continue on the home screen to pick it up again."
-        )
-      ) {
-        return;
-      }
-      const r = pendingResolve;
-      pendingResolve = null;
-      r(CMP_ABORT);
-      return;
-    }
-    rankingAbortRequested = true;
-    return;
-  }
-  if (resultsVisible) {
-    rankingSourceLabel = null;
-    window.__lastRanked = null;
-    lastShareMeta = null;
-    showComparePanel(false);
-    showResultsPanel(false);
-    document.getElementById("panel-setup")?.classList.remove("hidden");
-    document.getElementById("copy-status").textContent = "";
-    const sn = document.getElementById("save-name");
-    if (sn) sn.value = "";
-  }
-}
-
-function exchangeCodeForToken(code, verifier, clientId) {
-  const body = new URLSearchParams({
-    grant_type: "authorization_code",
-    code,
-    redirect_uri: redirectUri(),
-    client_id: clientId,
-    code_verifier: verifier,
-  });
-  return fetch("https://accounts.spotify.com/api/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-  }).then(async (res) => {
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error_description || data.error || "Token exchange failed");
-    return data;
-  });
-}
-
-async function handleAuthReturn() {
-  const params = new URLSearchParams(window.location.search);
-  const code = params.get("code");
-  const err = params.get("error");
-  if (err) {
-    document.getElementById("auth-status").textContent = `Sign-in error: ${params.get("error_description") || err}`;
-    document.getElementById("auth-status").classList.add("error");
-    window.history.replaceState({}, "", window.location.pathname);
-    return;
-  }
-  if (!code) return;
-
-  const verifier = sessionStorage.getItem(SS_VERIFIER);
-  const clientId = getEffectiveClientId();
-  if (!verifier || !clientId) {
-    document.getElementById("auth-status").textContent = "Missing PKCE state. Set Client ID (or config.js) and try Sign in again.";
-    document.getElementById("auth-status").classList.add("error");
-    window.history.replaceState({}, "", window.location.pathname);
-    return;
-  }
-
-  try {
-    const data = await exchangeCodeForToken(code, verifier, clientId);
-    setAccessToken(data.access_token, data.expires_in || 3600);
-    if (data.refresh_token) {
-      sessionStorage.setItem(SS_REFRESH, data.refresh_token);
-    }
-    sessionStorage.removeItem(SS_VERIFIER);
-    const granted = new Set((data.scope || "").split(/\s+/).filter(Boolean));
-    if (!granted.has("playlist-read-private")) {
-      const authEl = document.getElementById("auth-status");
-      if (authEl) {
-        authEl.textContent =
-          "Spotify did not grant playlist access. In the Spotify Developer Dashboard, open your app → Settings and ensure playlist scopes are enabled, then use Sign out and sign in again.";
-        authEl.classList.add("error");
-      }
-    } else {
-      document.getElementById("auth-status").classList.remove("error");
-    }
-    await refreshSpotifyUserDisplay();
-    updateSpotifySignOutVisibility();
-    updateLoadButtonState();
-  } catch (e) {
-    document.getElementById("auth-status").textContent = e.message || String(e);
-    document.getElementById("auth-status").classList.add("error");
-  }
-  window.history.replaceState({}, "", window.location.pathname);
-}
-
-async function startLogin() {
-  const clientId = getEffectiveClientId();
-  if (!clientId) {
-    document.getElementById("auth-status").textContent = "Set Client ID in config.js or paste it above and save.";
-    document.getElementById("auth-status").classList.add("error");
-    return;
-  }
-  const { verifier, challenge } = await generatePkce();
-  sessionStorage.setItem(SS_VERIFIER, verifier);
-
-  const auth = new URL("https://accounts.spotify.com/authorize");
-  auth.searchParams.set("client_id", clientId);
-  auth.searchParams.set("response_type", "code");
-  auth.searchParams.set("redirect_uri", redirectUri());
-  auth.searchParams.set("scope", AUTH_SCOPES);
-  auth.searchParams.set("code_challenge_method", "S256");
-  auth.searchParams.set("code_challenge", challenge);
-
-  window.location.href = auth.toString();
-}
-
-function updateSpotifySignOutVisibility() {
-  const btn = document.getElementById("btn-logout-spotify");
-  if (!btn) return;
-  btn.classList.toggle("hidden", !hasSpotifySession());
-}
-
-function signOutSpotify() {
-  clearAuth();
-  const authEl = document.getElementById("auth-status");
-  if (authEl) {
-    authEl.textContent = "Signed out. Sign in again to continue.";
-    authEl.classList.remove("error");
-  }
-}
+/* ------------------------------------------------------------------ */
+/* Theme, keyboard, wiring                                             */
+/* ------------------------------------------------------------------ */
 
 function applyTheme(mode) {
   const h = document.documentElement;
   h.classList.remove("theme-dark", "theme-light", "theme-auto");
-  if (mode === "light") h.classList.add("theme-light");
-  else if (mode === "auto") h.classList.add("theme-auto");
-  else h.classList.add("theme-dark");
+  h.classList.add(mode === "light" ? "theme-light" : mode === "auto" ? "theme-auto" : "theme-dark");
 }
 
 function initTheme() {
-  const saved = localStorage.getItem(LS_THEME) || "dark";
-  const sel = document.getElementById("theme-select");
-  const v = saved === "light" || saved === "dark" || saved === "auto" ? saved : "dark";
-  if (sel) sel.value = v;
+  const sel = $("theme-select");
+  const saved = localStorage.getItem(LS_THEME);
+  const v = ["light", "dark", "auto"].includes(saved) ? saved : "dark";
+  sel.value = v;
   applyTheme(v);
-  sel?.addEventListener("change", () => {
+  sel.addEventListener("change", () => {
     localStorage.setItem(LS_THEME, sel.value);
     applyTheme(sel.value);
   });
 }
 
-function initCompareKeyboard() {
+function initKeyboard() {
   document.addEventListener("keydown", (e) => {
-    const comparePanel = document.getElementById("panel-compare");
-    if (!comparePanel || comparePanel.classList.contains("hidden")) return;
-    if (!pendingResolve) return;
-    if (e.target?.closest?.("audio")) return;
+    if (!active || $("view-compare").classList.contains("hidden")) return;
     const tag = e.target?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
     const k = e.key.toLowerCase();
-    if (k === "u") {
-      document.getElementById("btn-undo")?.click();
-      return;
-    }
-    if (k === "s") {
-      document.getElementById("btn-skip-pair")?.click();
-      return;
-    }
-    let choice = null;
-    if (k === "1" || e.key === "ArrowLeft") choice = -1;
-    else if (k === "2" || e.key === "ArrowRight") choice = 1;
+    if (k === "1" || e.key === "ArrowLeft") choose("left");
+    else if (k === "2" || e.key === "ArrowRight") choose("right");
+    else if (k === "u") undoPick();
+    else if (k === "s") skipPair();
     else return;
     e.preventDefault();
-    const pr = pendingResolve;
-    if (!pr) return;
-    pendingResolve = null;
-    pr(choice);
   });
 }
 
-/** Optional gitignored config.js for online backup keys. Missing file is normal on static hosts. */
-function loadOptionalConfigScript() {
+/** Local-only config.js (gitignored) can override Client ID / Supabase keys during development. */
+function loadLocalConfig() {
+  if (!isLocalDev) return Promise.resolve();
   return new Promise((resolve) => {
     const s = document.createElement("script");
-    s.src = "config.js?v=29";
-    s.onload = () => resolve();
-    s.onerror = () => resolve();
+    s.src = "config.js";
+    s.onload = resolve;
+    s.onerror = resolve;
     document.head.appendChild(s);
   });
 }
 
-async function init() {
-  await loadOptionalConfigScript();
-  initTheme();
-  initCompareKeyboard();
-  renderSavedRankingsList();
-  refreshProgressPicker();
-  await initCloudSync();
-  setRedirectDisplay();
-  if (window.location.protocol === "file:") {
-    const auth = document.getElementById("auth-status");
-    if (auth) {
-      auth.textContent =
-        "Open over HTTP, not file://. Try: python3 -m http.server 8765 → http://127.0.0.1:8765/";
-      auth.classList.add("error");
-    }
-  }
-  wireCompareCards();
+function wireUi() {
+  $("btn-login").addEventListener("click", startLogin);
+  $("btn-login-hero").addEventListener("click", startLogin);
+  $("btn-logout-spotify").addEventListener("click", signOutSpotify);
 
-  const bakedId = (typeof window.SONG_RANKER_CLIENT_ID === "string" ? window.SONG_RANKER_CLIENT_ID : "").trim();
-  const clientSetup = document.getElementById("client-setup-block");
-  if (bakedId && clientSetup) {
-    clientSetup.classList.add("hidden");
-  }
-
-  const clientInput = document.getElementById("client-id");
-  if (clientInput) clientInput.value = getStoredClientId();
-
-  document.getElementById("btn-save-client")?.addEventListener("click", () => {
-    setStoredClientId(clientInput.value);
-    document.getElementById("auth-status").textContent = clientInput.value ? "Client ID saved." : "Cleared.";
-    document.getElementById("auth-status").classList.remove("error");
+  $("spotify-url").addEventListener("input", updateLoadButtonState);
+  $("spotify-url").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !$("btn-load").disabled) $("btn-load").click();
   });
-
-  document.getElementById("btn-login")?.addEventListener("click", startLogin);
-
-  await handleAuthReturn().catch(() => {});
-  await refreshAccessTokenIfNeeded();
-  if (getAccessToken()) {
-    refreshSpotifyUserDisplay().catch(() => {});
-  }
-  updateSpotifySignOutVisibility();
-  updateLoadButtonState();
-
-  document.getElementById("btn-logout-spotify")?.addEventListener("click", signOutSpotify);
-
-  document.getElementById("btn-load")?.addEventListener("click", async () => {
-    const status = document.getElementById("load-status");
-    clearRateLimitCountdownUi();
-    status.textContent = "";
-    status.classList.remove("error");
-
-    if (!(await refreshAccessTokenIfNeeded())) {
-      status.textContent = "Sign in with Spotify first.";
-      status.classList.add("error");
-      return;
-    }
-
-    const preset = selectedPresetId ? RANK_PRESETS.find((p) => p.id === selectedPresetId) : null;
-    if (preset) {
-      await startRankingFromPreset(preset);
-      return;
-    }
-
-    const url = document.getElementById("spotify-url").value;
-    const parsed = parseSpotifyInput(url);
+  $("btn-load").addEventListener("click", () => {
+    const parsed = parseSpotifyInput($("spotify-url").value);
     if (!parsed) {
-      status.textContent = "Could not read a Spotify playlist or artist link.";
-      status.classList.add("error");
+      setStatus($("load-status"), "That doesn’t look like a Spotify playlist, album or artist link.", true);
       return;
     }
-
-    status.textContent = "Loading…";
-    try {
-      let tracks;
-      let sourceLabelHint = null;
-      if (parsed.type === "playlist") tracks = await fetchAllPlaylistTracks(parsed.id);
-      else if (parsed.type === "artist") tracks = await fetchArtistTracks(parsed.id);
-      else if (parsed.type === "album") {
-        const album = await fetchAlbumTracks(parsed.id);
-        tracks = album.tracks;
-        sourceLabelHint = album.sourceLabel;
-      } else if (parsed.type === "track") {
-        status.textContent = "Load a playlist, artist, or album (single track is not enough to rank).";
-        status.classList.add("error");
-        return;
-      } else {
-        status.textContent = "Unsupported link type.";
-        status.classList.add("error");
-        return;
-      }
-      if (tracks.length < 2) {
-        status.textContent = "Need at least two tracks to rank.";
-        status.classList.add("error");
-        return;
-      }
-      status.textContent = `Loaded ${tracks.length} tracks.`;
-      const label = sourceLabelHint ?? (await fetchSpotifySourceLabel(parsed));
-      await runRanking(tracks, { sourceLabel: label });
-    } catch (e) {
-      applyLoadStatusError(status, e);
-    }
+    loadSource(parsed.type, parsed.id);
   });
-
-  document.getElementById("spotify-url")?.addEventListener("input", () => {
-    const v = (document.getElementById("spotify-url")?.value || "").trim();
-    if (v.length === 0) {
-      updateLoadButtonState();
-      return;
-    }
-    clearPresetSelectionUI();
-  });
-
-  const presetWrap = document.getElementById("preset-buttons");
-  if (presetWrap) {
-    presetWrap.setAttribute("role", "group");
-    presetWrap.setAttribute("aria-label", "Quick start presets");
-    for (const p of RANK_PRESETS) {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "btn btn-preset";
-      b.textContent = p.label;
-      b.dataset.presetId = p.id;
-      b.setAttribute("aria-pressed", "false");
-      b.addEventListener("click", () => selectPreset(p));
-      presetWrap.appendChild(b);
-    }
+  const presetWrap = $("preset-buttons");
+  for (const p of RANK_PRESETS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn-preset";
+    b.textContent = p.label;
+    b.addEventListener("click", () => loadSource("artist", p.id));
+    presetWrap.appendChild(b);
   }
+  $("btn-ready-cancel").addEventListener("click", hideReady);
 
-  document.getElementById("btn-save-ranking")?.addEventListener("click", saveCurrentRanking);
+  $("card-left").addEventListener("click", () => choose("left"));
+  $("card-right").addEventListener("click", () => choose("right"));
+  $("preview-left").addEventListener("click", () => togglePreview("left"));
+  $("preview-right").addEventListener("click", () => togglePreview("right"));
+  $("btn-undo").addEventListener("click", undoPick);
+  $("btn-skip-pair").addEventListener("click", skipPair);
+  $("btn-back-home-compare").addEventListener("click", leaveCompare);
 
-  document.getElementById("saved-rankings-list")?.addEventListener("click", (e) => {
-    const del = e.target.closest(".saved-ranking-delete");
-    const open = e.target.closest(".saved-ranking-open");
-    if (del?.dataset.id) {
-      e.preventDefault();
-      deleteSavedById(del.dataset.id);
-      return;
-    }
-    if (open?.dataset.id) loadSavedById(open.dataset.id);
+  $("btn-back-home-results").addEventListener("click", () => showView("home"));
+  $("btn-new").addEventListener("click", () => {
+    showView("home");
+    $("spotify-url").focus();
+  });
+  $("btn-restart").addEventListener("click", rankAgain);
+  $("save-name").addEventListener("change", renameCurrentResult);
+  $("btn-share-copy-link").addEventListener("click", copyShareLink);
+  const closeMenu = () => ($("export-menu").open = false);
+  $("btn-export").addEventListener("click", () => (closeMenu(), copyAsText()));
+  $("btn-export-csv").addEventListener("click", () => (closeMenu(), exportCsv()));
+  $("btn-export-json").addEventListener("click", () => (closeMenu(), exportJson()));
+  $("btn-share-download-page").addEventListener("click", () => (closeMenu(), downloadSharePage()));
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#export-menu")) closeMenu();
   });
 
-  document.getElementById("btn-save-ranking-progress")?.addEventListener("click", () => saveProgressNow());
+  window.addEventListener("pagehide", () => persistActive(true));
 
-  document.getElementById("btn-resume-progress")?.addEventListener("click", async () => {
-    const snap = getSelectedProgressSnapshot();
-    const st = document.getElementById("progress-status");
-    const loadSt = document.getElementById("load-status");
-    if (!snap || !isValidProgressSnapshot(snap)) {
-      if (st) {
-        st.textContent = "Pick a session from the list first.";
-        st.classList.add("error");
-      }
-      return;
-    }
-    if (st) {
-      st.textContent = "";
-      st.classList.remove("error");
-    }
-    if (loadSt) {
-      loadSt.textContent = "";
-      loadSt.classList.remove("error");
-    }
-    await runRanking([], { resumeSnapshot: snap });
-  });
+  if (isLocalDev || !getBakedClientId()) {
+    $("dev-setup").classList.remove("hidden");
+    $("redirect-uri-display").textContent = redirectUri();
+    $("client-id").value = getStoredClientId();
+    $("btn-save-client").addEventListener("click", () => {
+      const v = $("client-id").value.trim();
+      if (v) localStorage.setItem(LS_CLIENT, v);
+      else localStorage.removeItem(LS_CLIENT);
+      setStatus($("auth-status"), v ? "Client ID saved." : "Client ID override cleared.");
+    });
+  }
+}
 
-  document.getElementById("btn-delete-progress")?.addEventListener("click", deleteSelectedProgress);
-
-  document.getElementById("btn-export")?.addEventListener("click", () => {
-    const ranked = window.__lastRanked;
-    const copyStatus = document.getElementById("copy-status");
-    if (!ranked?.length) {
-      copyStatus.textContent = "Nothing to copy.";
-      return;
-    }
-    const lines = ranked.map((t, i) => `${i + 1}. ${t.name}${t.artists ? ` — ${t.artists}` : ""} ${t.url}`);
-    navigator.clipboard.writeText(lines.join("\n")).then(
-      () => {
-        copyStatus.textContent = "Copied to clipboard.";
-      },
-      () => {
-        copyStatus.textContent = "Could not copy (permission denied).";
-      }
+async function init() {
+  await loadLocalConfig();
+  initTheme();
+  initKeyboard();
+  wireUi();
+  migrateLegacyProgress();
+  showView("home");
+  if (location.protocol === "file:") {
+    setStatus(
+      $("auth-status"),
+      "Open over HTTP, not file://. Try: python3 -m http.server 8765 → http://127.0.0.1:8765/",
+      true
     );
-  });
-
-  document.getElementById("btn-export-json")?.addEventListener("click", exportRankingToJson);
-  document.getElementById("btn-export-csv")?.addEventListener("click", exportRankingToCsv);
-
-  document.getElementById("btn-share-copy-link")?.addEventListener("click", () => {
-    copyShareLink().catch(() => {});
-  });
-  document.getElementById("btn-share-download-page")?.addEventListener("click", () => {
-    downloadShareableStandaloneHtml().catch(() => {});
-  });
-
-  document.getElementById("btn-restart")?.addEventListener("click", () => {
-    const ranked = window.__lastRanked;
-    if (!ranked?.length) return;
-    runRanking([...ranked], {
-      sourceLabel: rankingSourceLabel || guessLabelFromTracks(ranked),
-    }).catch(() => {});
-  });
-
-  document.getElementById("btn-back-home-compare")?.addEventListener("click", (e) => {
-    e.preventDefault();
-    backToLanding();
-  });
-  document.getElementById("btn-back-home-results")?.addEventListener("click", (e) => {
-    e.preventDefault();
-    backToLanding();
-  });
-
-  document.getElementById("btn-new")?.addEventListener("click", () => {
-    window.__lastRanked = null;
-    lastShareMeta = null;
-    rankingSourceLabel = null;
-    showComparePanel(false);
-    showResultsPanel(false);
-    document.getElementById("panel-setup")?.classList.remove("hidden");
-    document.getElementById("load-status").textContent = "";
-    document.getElementById("copy-status").textContent = "";
-    const sn = document.getElementById("save-name");
-    if (sn) sn.value = "";
-  });
+  }
+  await handleAuthReturn();
+  await getValidAccessToken();
+  await updateAuthUi();
+  initCloudSync().catch((e) => console.warn(e));
 }
 
 init().catch((err) => console.error(err));

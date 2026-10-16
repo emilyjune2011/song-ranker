@@ -210,10 +210,18 @@
       listEl.innerHTML = "";
       data.tracks.forEach(function (row) {
         var li = document.createElement("li");
-        var a = document.createElement("a");
-        a.href = row.url || "#";
-        a.target = "_blank";
-        a.rel = "noopener";
+        // Share links are untrusted input: only link out to https URLs (blocks javascript: etc.).
+        var href = null;
+        try {
+          var u = new URL(row.url);
+          if (u.protocol === "https:") href = u.href;
+        } catch (e) {}
+        var a = document.createElement(href ? "a" : "span");
+        if (href) {
+          a.href = href;
+          a.target = "_blank";
+          a.rel = "noopener";
+        }
         a.textContent = row.rank + ". " + row.name;
         li.appendChild(a);
         if (row.artists || row.album) {

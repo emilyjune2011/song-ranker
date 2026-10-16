@@ -1,10 +1,8 @@
 /**
- * Optional local overrides (gitignored). Copy to config.js:
+ * Optional local overrides (gitignored, only loaded on localhost). Copy to config.js:
  *   cp config.example.js config.js
- *
- * Spotify Client ID is in config.public.js. Add URL + anon key here for online backup,
- * or put them in config.public.js for the hosted site. Online backup also stores
- * Quick start preset caches so another device can Restore them (same Supabase user).
+ * Anything set here replaces the values from config.public.js.
  */
-window.SONG_RANKER_SUPABASE_URL = "";
-window.SONG_RANKER_SUPABASE_ANON_KEY = "";
+// window.SONG_RANKER_CLIENT_ID = "";
+// window.SONG_RANKER_SUPABASE_URL = "";
+// window.SONG_RANKER_SUPABASE_ANON_KEY = "";

@@ -21,249 +21,185 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=34" />
+  <link rel="stylesheet" href="styles.css?v=35" />
 </head>
 <body>
   <div class="app">
     <header class="header">
-      <div class="header-row">
-        <div class="header-brand">
-          <h1>Song ranker</h1>
-          <p class="tagline">Pairwise sort for Spotify playlists & albums — pick favorites, get a clean list.</p>
+      <div class="header-brand">
+        <h1>Song ranker</h1>
+        <p class="tagline">Pick your favorite of two, over and over. Get a clean ranked list.</p>
+      </div>
+      <div class="header-tools">
+        <div id="account" class="account">
+          <button type="button" id="btn-login" class="btn primary btn-sm hidden">Sign in with Spotify</button>
+          <span id="user-display" class="user-display hidden"></span>
+          <button type="button" id="btn-logout-spotify" class="btn-link hidden">Sign out</button>
         </div>
-        <div class="header-tools">
-          <div class="header-theme" role="group" aria-label="Color theme">
-            <span class="header-theme-label" id="theme-select-label">Theme</span>
-            <select id="theme-select" class="select-input select-compact" aria-labelledby="theme-select-label">
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-              <option value="auto">System</option>
-            </select>
-          </div>
-        </div>
+        <label class="theme-toggle">
+          <span class="visually-hidden">Color theme</span>
+          <select id="theme-select" class="select-input select-compact">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+            <option value="auto">System</option>
+          </select>
+        </label>
       </div>
     </header>
+    <p id="auth-status" class="status" role="status" aria-live="polite"></p>
 
-    <section id="panel-setup" class="panel panel-elevated">
-      <h2>1. Sign in</h2>
-      <div class="actions actions-tight">
-        <button type="button" id="btn-login" class="btn primary">Sign in with Spotify</button>
-        <button type="button" id="btn-logout-spotify" class="btn secondary btn-sm hidden">Sign out</button>
-      </div>
-      <p id="user-display" class="user-display hidden" role="status" aria-live="polite"></p>
-      <p id="auth-status" class="status"></p>
+    <!-- Home -->
+    <main id="view-home">
+      <section id="signin-card" class="card card-hero hidden">
+        <h2>Sign in to load songs</h2>
+        <p class="hint">Song ranker reads playlists, albums and artists from Spotify. Your picks stay in this browser.</p>
+        <button type="button" id="btn-login-hero" class="btn primary">Sign in with Spotify</button>
+      </section>
 
-      <details class="panel-details dev-setup-details">
-        <summary>Developer setup</summary>
-        <div class="details-body">
-          <p class="hint">Use this redirect URI in your <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify app</a>:</p>
-          <p class="redirect-uri-line"><code id="redirect-uri-display"></code></p>
-          <div id="client-setup-block">
-            <div class="field field-tight">
-              <label class="field-label" for="client-id">Client ID</label>
-              <input id="client-id" type="text" autocomplete="off" placeholder="Optional if set in config.js" />
-            </div>
-            <div class="actions actions-tight">
-              <button type="button" id="btn-save-client" class="btn secondary btn-sm">Save</button>
+      <section id="continue-section" class="section hidden" aria-labelledby="continue-heading">
+        <h2 id="continue-heading" class="section-title">Pick up where you left off</h2>
+        <ul id="session-list" class="session-list" role="list"></ul>
+      </section>
+
+      <section id="new-section" class="card" aria-labelledby="new-heading">
+        <h2 id="new-heading">New ranking</h2>
+
+        <div id="load-form">
+          <label class="field-label" for="spotify-url">Paste a Spotify playlist, album or artist link</label>
+          <div class="input-row">
+            <input id="spotify-url" type="url" inputmode="url" placeholder="https://open.spotify.com/…" autocomplete="off" />
+            <button type="button" id="btn-load" class="btn primary" disabled>Load</button>
+          </div>
+          <div class="preset-row">
+            <span class="preset-label">Or try</span>
+            <div id="preset-buttons" class="preset-buttons" role="group" aria-label="Quick start presets"></div>
+          </div>
+          <label class="check">
+            <input type="checkbox" id="include-singles" />
+            <span>For artists, include singles &amp; EPs <span class="muted">(more songs, slower to load)</span></span>
+          </label>
+          <p id="load-status" class="status" role="status" aria-live="polite"></p>
+        </div>
+
+        <div id="ready-card" class="ready hidden">
+          <div class="ready-head">
+            <img id="ready-art" class="ready-art" alt="" />
+            <div>
+              <p id="ready-title" class="ready-title"></p>
+              <p id="ready-meta" class="hint"></p>
             </div>
           </div>
+          <div id="goal-buttons" class="goal-buttons"></div>
+          <button type="button" id="btn-ready-cancel" class="btn-link">Choose something else</button>
         </div>
-      </details>
+      </section>
 
-      <h2>2. Options</h2>
-      <div class="options-grid">
-        <div class="field field-option-card">
-          <label class="field-label" for="ranking-mode">Ranking goal</label>
-          <select id="ranking-mode" class="select-input">
-            <option value="full">Complete ranking</option>
-            <option value="25">Top 25</option>
-            <option value="100">Top 100</option>
-          </select>
-        </div>
-        <div class="field field-option-card">
-          <label class="field-label" for="compare-experience">How to compare</label>
-          <select id="compare-experience" class="select-input">
-            <option value="standard">Standard</option>
-            <option value="blind">Blind (audio only)</option>
-          </select>
-        </div>
-      </div>
+      <section id="finished-section" class="section" aria-labelledby="finished-heading">
+        <h2 id="finished-heading" class="section-title">Finished lists</h2>
+        <ul id="saved-rankings-list" class="saved-list" role="list"></ul>
+        <p id="saved-rankings-empty" class="hint hidden">Lists you finish show up here.</p>
+      </section>
 
-      <h2>3. Load</h2>
-      <div class="load-layout">
-        <div class="load-preset-col">
-          <div class="preset-block">
-            <div class="preset-block-head">
-              <span class="preset-block-title">Quick start</span>
-              <span class="preset-block-badge">Presets</span>
-            </div>
-            <div id="preset-buttons" class="preset-buttons"></div>
-          </div>
-        </div>
-        <div class="load-url-col">
-          <p class="load-url-lead">Or, load a playlist, artist, or album</p>
-          <div class="field field-tight field-load-link">
-            <label class="field-label" for="spotify-url">Spotify link</label>
-            <input id="spotify-url" type="url" placeholder="https://open.spotify.com/playlist/…" autocomplete="off" />
-          </div>
-        </div>
-      </div>
-      <div class="actions actions-tight load-actions">
-        <button type="button" id="btn-load" class="btn primary btn-load-start" disabled>Start ranking</button>
-      </div>
-      <p id="load-status" class="status" role="status" aria-live="polite"></p>
-
-      <h2 class="h2-tight">4. Saved</h2>
-
-      <div id="cloud-panel" class="cloud-panel hidden">
-        <div class="cloud-panel-head">
-          <span class="cloud-panel-title">Save online</span>
-        </div>
-        <p id="cloud-status" class="status cloud-status" role="status"></p>
-        <div class="actions actions-tight cloud-actions">
-          <button type="button" id="btn-cloud-sync" class="btn primary btn-sm" disabled>Save online</button>
+      <section id="cloud-panel" class="card card-quiet hidden">
+        <h2>Online backup</h2>
+        <p id="cloud-status" class="status" role="status"></p>
+        <div class="actions">
+          <button type="button" id="btn-cloud-sync" class="btn secondary btn-sm" disabled>Back up now</button>
           <button type="button" id="btn-cloud-restore" class="btn secondary btn-sm" disabled>Restore</button>
         </div>
-      </div>
+      </section>
 
-      <p class="section-label">This device</p>
-
-      <details class="panel-details">
-        <summary>In progress</summary>
-        <div class="details-body">
-          <div class="field field-tight">
-            <label class="field-label" for="progress-pick">Session</label>
-            <select id="progress-pick" class="select-input">
-              <option value="">Choose a session…</option>
-            </select>
-          </div>
-          <div class="actions actions-tight">
-            <button type="button" id="btn-resume-progress" class="btn primary btn-sm">Continue</button>
-            <button type="button" id="btn-delete-progress" class="btn secondary btn-sm">Delete</button>
-          </div>
-          <p id="progress-status" class="status status-tight"></p>
+      <details id="dev-setup" class="dev-setup hidden">
+        <summary>Developer setup</summary>
+        <p class="hint">Redirect URI for your <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Spotify app</a>:</p>
+        <p><code id="redirect-uri-display"></code></p>
+        <label class="field-label" for="client-id">Client ID override</label>
+        <div class="input-row">
+          <input id="client-id" type="text" autocomplete="off" placeholder="Uses config.public.js when empty" />
+          <button type="button" id="btn-save-client" class="btn secondary btn-sm">Save</button>
         </div>
       </details>
+    </main>
 
-      <details class="panel-details">
-        <summary>Finished lists</summary>
-        <div class="details-body">
-          <p class="hint hint-tight details-hint">Tap a row to open. Remove deletes from this device.</p>
-          <ul id="saved-rankings-list" class="saved-rankings-list" role="list"></ul>
-          <p id="saved-rankings-empty" class="hint saved-rankings-empty hidden">Nothing saved yet.</p>
-          <p id="saved-rankings-status" class="status status-tight"></p>
-        </div>
-      </details>
-    </section>
-
-    <section id="panel-compare" class="panel panel-elevated panel-compare hidden">
-      <div class="panel-nav">
+    <!-- Compare -->
+    <main id="view-compare" class="hidden">
+      <div class="compare-top">
         <button type="button" id="btn-back-home-compare" class="btn secondary btn-sm">← Home</button>
-      </div>
-      <div class="progress-wrap">
-        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
-        <p id="progress-text" class="progress-text"></p>
-      </div>
-      <p class="kb-hint hint small" id="compare-kb-hint" aria-hidden="true">
-        <span class="kbd">1</span> left · <span class="kbd">2</span> right · <span class="kbd">U</span> undo · <span class="kbd">S</span> skip
-      </p>
-      <div class="duel">
-        <div class="song-column">
-          <div class="embed-wrap hidden" id="embed-wrap-a">
-            <iframe
-              id="embed-a"
-              class="spotify-embed"
-              title="Spotify preview A"
-              width="100%"
-              height="152"
-              allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-            ></iframe>
-          </div>
-          <div class="blind-audio-wrap hidden" id="blind-wrap-a">
-            <div class="blind-audio-inner">
-              <span class="blind-badge" aria-hidden="true">A</span>
-              <audio id="audio-a" class="blind-audio-el" controls playsinline preload="metadata" crossorigin="anonymous"></audio>
-              <p class="blind-no-preview hidden" id="blind-no-preview-a">No 30s preview from Spotify.</p>
-            </div>
-          </div>
-          <button type="button" class="song-card" id="card-a" aria-label="Prefer song A">
-            <span class="song-title" id="title-a"></span>
-            <span class="song-meta" id="meta-a"></span>
-          </button>
-        </div>
-        <div class="vs">or</div>
-        <div class="song-column">
-          <div class="embed-wrap hidden" id="embed-wrap-b">
-            <iframe
-              id="embed-b"
-              class="spotify-embed"
-              title="Spotify preview B"
-              width="100%"
-              height="152"
-              allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-            ></iframe>
-          </div>
-          <div class="blind-audio-wrap hidden" id="blind-wrap-b">
-            <div class="blind-audio-inner">
-              <span class="blind-badge" aria-hidden="true">B</span>
-              <audio id="audio-b" class="blind-audio-el" controls playsinline preload="metadata" crossorigin="anonymous"></audio>
-              <p class="blind-no-preview hidden" id="blind-no-preview-b">No 30s preview from Spotify.</p>
-            </div>
-          </div>
-          <button type="button" class="song-card" id="card-b" aria-label="Prefer song B">
-            <span class="song-title" id="title-b"></span>
-            <span class="song-meta" id="meta-b"></span>
-          </button>
+        <div class="compare-progress">
+          <p id="compare-label" class="compare-label"></p>
+          <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+          <p id="progress-text" class="progress-text"></p>
         </div>
       </div>
-      <div class="skip-pair">
-        <div class="compare-extras">
-          <button type="button" id="btn-undo" class="btn secondary btn-sm">Undo</button>
-          <button type="button" id="btn-skip-pair" class="btn secondary btn-sm">Skip</button>
-        </div>
-        <p class="hint small" id="skip-hint">Defer to compare other pairs first. Last matchup needs a pick.</p>
-      </div>
-      <div class="compare-save-row">
-        <button type="button" id="btn-save-ranking-progress" class="btn secondary btn-sm">Save</button>
-        <span id="compare-save-status" class="hint small" role="status"></span>
-      </div>
-      <p class="hint small compare-hint">Auto-saved each round.</p>
-    </section>
 
-    <section id="panel-results" class="panel panel-elevated hidden">
-      <div class="panel-nav">
+      <p class="compare-question">Which do you like more?</p>
+
+      <div class="duel">
+        <div class="song-column" data-side="left">
+          <button type="button" class="song-card" id="card-left">
+            <span class="song-art-wrap"><img class="song-art" id="art-left" alt="" /></span>
+            <span class="song-text">
+              <span class="song-title" id="title-left"></span>
+              <span class="song-meta" id="meta-left"></span>
+            </span>
+            <span class="kbd song-key" aria-hidden="true">1</span>
+          </button>
+          <button type="button" class="preview-btn" id="preview-left" aria-expanded="false">▶ Preview</button>
+          <div class="embed-slot" id="embed-left"></div>
+        </div>
+        <div class="song-column" data-side="right">
+          <button type="button" class="song-card" id="card-right">
+            <span class="song-art-wrap"><img class="song-art" id="art-right" alt="" /></span>
+            <span class="song-text">
+              <span class="song-title" id="title-right"></span>
+              <span class="song-meta" id="meta-right"></span>
+            </span>
+            <span class="kbd song-key" aria-hidden="true">2</span>
+          </button>
+          <button type="button" class="preview-btn" id="preview-right" aria-expanded="false">▶ Preview</button>
+          <div class="embed-slot" id="embed-right"></div>
+        </div>
+      </div>
+
+      <div class="compare-controls">
+        <button type="button" id="btn-undo" class="btn secondary btn-sm">Undo <span class="kbd">U</span></button>
+        <button type="button" id="btn-skip-pair" class="btn secondary btn-sm">Not sure, ask later <span class="kbd">S</span></button>
+      </div>
+      <p class="hint center">Saved after every pick.<span class="kbd-hint"> Use <span class="kbd">1</span>/<span class="kbd">2</span> or arrow keys to choose.</span></p>
+    </main>
+
+    <!-- Results -->
+    <main id="view-results" class="hidden">
+      <div class="results-top">
         <button type="button" id="btn-back-home-results" class="btn secondary btn-sm">← Home</button>
       </div>
-      <h2>Results</h2>
-      <p id="results-mode-hint" class="hint hint-tight hidden" role="status"></p>
+      <div class="results-head">
+        <label class="visually-hidden" for="save-name">List name</label>
+        <input id="save-name" class="title-input" type="text" autocomplete="off" />
+        <p id="results-meta" class="hint"></p>
+      </div>
+
+      <div class="results-actions">
+        <button type="button" id="btn-share-copy-link" class="btn primary btn-sm">Copy share link</button>
+        <details class="menu" id="export-menu">
+          <summary class="btn secondary btn-sm">Export ▾</summary>
+          <div class="menu-items">
+            <button type="button" id="btn-export">Copy as text</button>
+            <button type="button" id="btn-export-csv">Download CSV</button>
+            <button type="button" id="btn-export-json">Download JSON</button>
+            <button type="button" id="btn-share-download-page">Download web page</button>
+          </div>
+        </details>
+        <button type="button" id="btn-restart" class="btn secondary btn-sm">Rank again</button>
+        <button type="button" id="btn-new" class="btn secondary btn-sm">New ranking</button>
+      </div>
+      <p id="share-status" class="status" role="status" aria-live="polite"></p>
+
       <ol id="ranked-list" class="ranked-list"></ol>
-
-      <div class="share-card">
-        <h3 class="share-heading">Share read-only list</h3>
-        <p class="hint share-lead">No login required for viewers. Best for lists under ~500 songs (link length limits).</p>
-        <div class="share-actions">
-          <button type="button" id="btn-share-copy-link" class="btn primary btn-sm">Copy link</button>
-          <button type="button" id="btn-share-download-page" class="btn secondary btn-sm">Download HTML</button>
-        </div>
-        <p id="share-status" class="status status-tight" role="status"></p>
-      </div>
-
-      <div class="field field-tight">
-        <label class="field-label" for="save-name">Save as</label>
-        <input id="save-name" type="text" autocomplete="off" placeholder="Prefilled from source" />
-      </div>
-      <div class="actions actions-tight">
-        <button type="button" id="btn-save-ranking" class="btn secondary btn-sm">Keep</button>
-        <button type="button" id="btn-export" class="btn secondary btn-sm">Copy</button>
-        <button type="button" id="btn-export-json" class="btn secondary btn-sm">JSON</button>
-        <button type="button" id="btn-export-csv" class="btn secondary btn-sm">CSV</button>
-        <button type="button" id="btn-restart" class="btn primary btn-sm">Rank again</button>
-        <button type="button" id="btn-new" class="btn secondary btn-sm">New</button>
-      </div>
-      <p id="copy-status" class="status status-tight"></p>
-    </section>
+    </main>
   </div>
-  <script src="config.public.js?v=1"></script>
-  <script src="app.js?v=49" defer></script>
+  <script src="config.public.js?v=2"></script>
+  <script src="ranker.js?v=1" defer></script>
+  <script src="app.js?v=50" defer></script>
 </body>
 </html>

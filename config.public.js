@@ -1,6 +1,10 @@
 /**
- * Committed defaults (safe for public repos). PKCE Spotify apps expose Client ID in the browser.
- * Optional: set SONG_RANKER_SUPABASE_URL and SONG_RANKER_SUPABASE_ANON_KEY here so visitors get
- * “Save online” without extra setup, or use gitignored config.js (see config.example.js).
+ * Committed config, served with the site. A PKCE Spotify app's Client ID is public by design.
+ *
+ * Optional online backup: create a Supabase project, run supabase-schema.sql, enable
+ * Authentication → Providers → Anonymous, then set the Project URL and publishable (anon) key
+ * below. The "Online backup" panel stays hidden while these are empty.
  */
-window.SONG_RANKER_CLIENT_ID = "84c184244b864fb5a0f8d117f87c494a";
+window.SONG_RANKER_CLIENT_ID = "9d7bdf69709748168dea81482e9eeb5e";
+window.SONG_RANKER_SUPABASE_URL = "";
+window.SONG_RANKER_SUPABASE_ANON_KEY = "";
