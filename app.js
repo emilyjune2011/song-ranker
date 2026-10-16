@@ -648,6 +648,8 @@ function renderSessionList() {
     meta.className = "session-meta";
     const goal = s.state.topN ? `Top ${s.state.topN} of ${s.tracks.length}` : plural(s.tracks.length, "song");
     meta.textContent = `${goal} · ${progress.done} of ~${progress.total} picks`;
+    const downCount = (s.state.log.match(/[dx]/g) || []).length;
+    if (downCount) meta.textContent += ` · ${downCount} 👎`;
     const bar = document.createElement("span");
     bar.className = "mini-bar";
     const fill = document.createElement("span");
@@ -892,6 +894,7 @@ function fillCard(side, track) {
   btn.textContent = "▶ Preview";
   btn.setAttribute("aria-expanded", "false");
   btn.classList.toggle("hidden", !/^[A-Za-z0-9]+$/.test(track?.id || ""));
+  $(`down-${side}`).setAttribute("aria-label", `Send ${track?.name || "this song"} to the bottom`);
 }
 
 function togglePreview(side) {
@@ -940,6 +943,7 @@ function choose(side) {
   if (!active || active.ranker.isDone()) return;
   const pair = active.ranker.currentPair();
   active.ranker.choose(side === "left" ? pair.left : pair.right);
+  setStatus($("compare-status"), "");
   persistActive();
   pulse(side);
   renderCompare();
@@ -959,9 +963,21 @@ function skipPair() {
   renderCompare();
 }
 
+function downvote(side) {
+  if (!active || active.ranker.isDone()) return;
+  const pair = active.ranker.currentPair();
+  const id = side === "left" ? pair.left : pair.right;
+  active.ranker.downvote(id);
+  persistActive();
+  const name = active.byId.get(id)?.name || "Song";
+  setStatus($("compare-status"), `👎 “${name}” sent to the bottom. Press Undo to bring it back.`);
+  renderCompare();
+}
+
 function undoPick() {
   if (!active?.ranker.canUndo()) return;
   active.ranker.undo();
+  setStatus($("compare-status"), "");
   persistActive();
   renderCompare();
 }
@@ -974,8 +990,15 @@ function leaveCompare() {
 
 function finishActive() {
   const { session, ranker, byId } = active;
-  const ranked = ranker.result().map((id) => byId.get(id)).filter(Boolean);
   const topN = session.state.topN;
+  const ranked = ranker.result().map((id) => byId.get(id)).filter(Boolean);
+  // Downvoted songs go last (most recently downvoted at the very bottom); a top-N list leaves them out.
+  if (!topN) {
+    for (const id of ranker.downvoted()) {
+      const t = byId.get(id);
+      if (t) ranked.push({ ...t, downvoted: true });
+    }
+  }
   const entry = {
     id: newId(),
     name: `${session.label} — ${formatDate(Date.now())}`,
@@ -1014,6 +1037,7 @@ function showResults(entry, statusText) {
   const of = entry.sourceTracks?.length;
   $("results-meta").textContent = [
     entry.topN && of ? `Top ${n} of ${of} songs` : plural(n, "song"),
+    entry.tracks.some((t) => t.downvoted) ? `${entry.tracks.filter((t) => t.downvoted).length} 👎` : "",
     entry.savedAt ? `ranked ${formatDate(entry.savedAt)}` : "",
   ]
     .filter(Boolean)
@@ -1027,9 +1051,19 @@ function showResults(entry, statusText) {
 function renderRankedList(ranked) {
   const ol = $("ranked-list");
   ol.replaceChildren();
+  let dividerShown = false;
   ranked.forEach((t, idx) => {
+    if (t.downvoted && !dividerShown) {
+      dividerShown = true;
+      const div = document.createElement("li");
+      div.className = "ranked-divider";
+      div.textContent = "Sent to the bottom 👎";
+      ol.appendChild(div);
+    }
     const li = document.createElement("li");
-    li.className = idx < 3 ? `ranked-item podium podium-${idx + 1}` : "ranked-item";
+    li.className =
+      idx < 3 && !t.downvoted ? `ranked-item podium podium-${idx + 1}` : "ranked-item";
+    if (t.downvoted) li.classList.add("is-downvoted");
     const num = document.createElement("span");
     num.className = "rank-num";
     num.textContent = String(idx + 1);
@@ -1154,7 +1188,7 @@ function exportJson() {
 
 function rankAgain() {
   if (!currentResult) return;
-  const tracks = currentResult.sourceTracks || currentResult.tracks;
+  const tracks = (currentResult.sourceTracks || currentResult.tracks).map(({ downvoted, ...t }) => t);
   startNewSession(
     { tracks, label: currentResult.sourceLabel || currentResult.name, image: currentResult.image },
     currentResult.topN || null
@@ -1291,7 +1325,9 @@ function initKeyboard() {
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
     if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
     const k = e.key.toLowerCase();
-    if (k === "1" || e.key === "ArrowLeft") choose("left");
+    if (e.shiftKey && (e.code === "Digit1" || e.key === "ArrowLeft")) downvote("left");
+    else if (e.shiftKey && (e.code === "Digit2" || e.key === "ArrowRight")) downvote("right");
+    else if (k === "1" || e.key === "ArrowLeft") choose("left");
     else if (k === "2" || e.key === "ArrowRight") choose("right");
     else if (k === "u") undoPick();
     else if (k === "s") skipPair();
@@ -1344,6 +1380,8 @@ function wireUi() {
   $("card-right").addEventListener("click", () => choose("right"));
   $("preview-left").addEventListener("click", () => togglePreview("left"));
   $("preview-right").addEventListener("click", () => togglePreview("right"));
+  $("down-left").addEventListener("click", () => downvote("left"));
+  $("down-right").addEventListener("click", () => downvote("right"));
   $("btn-undo").addEventListener("click", undoPick);
   $("btn-skip-pair").addEventListener("click", skipPair);
   $("btn-back-home-compare").addEventListener("click", leaveCompare);

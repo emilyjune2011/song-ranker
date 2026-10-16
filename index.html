@@ -21,7 +21,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=35" />
+  <link rel="stylesheet" href="styles.css?v=36" />
 </head>
 <body>
   <div class="app">
@@ -144,7 +144,10 @@
             </span>
             <span class="kbd song-key" aria-hidden="true">1</span>
           </button>
-          <button type="button" class="preview-btn" id="preview-left" aria-expanded="false">▶ Preview</button>
+          <div class="card-actions">
+            <button type="button" class="preview-btn" id="preview-left" aria-expanded="false">▶ Preview</button>
+            <button type="button" class="downvote-btn" id="down-left" title="Not a fan: skip all further comparisons for this song (Shift+1)">👎 Send to bottom</button>
+          </div>
           <div class="embed-slot" id="embed-left"></div>
         </div>
         <div class="song-column" data-side="right">
@@ -156,7 +159,10 @@
             </span>
             <span class="kbd song-key" aria-hidden="true">2</span>
           </button>
-          <button type="button" class="preview-btn" id="preview-right" aria-expanded="false">▶ Preview</button>
+          <div class="card-actions">
+            <button type="button" class="preview-btn" id="preview-right" aria-expanded="false">▶ Preview</button>
+            <button type="button" class="downvote-btn" id="down-right" title="Not a fan: skip all further comparisons for this song (Shift+2)">👎 Send to bottom</button>
+          </div>
           <div class="embed-slot" id="embed-right"></div>
         </div>
       </div>
@@ -165,7 +171,8 @@
         <button type="button" id="btn-undo" class="btn secondary btn-sm">Undo <span class="kbd">U</span></button>
         <button type="button" id="btn-skip-pair" class="btn secondary btn-sm">Not sure, ask later <span class="kbd">S</span></button>
       </div>
-      <p class="hint center">Saved after every pick.<span class="kbd-hint"> Use <span class="kbd">1</span>/<span class="kbd">2</span> or arrow keys to choose.</span></p>
+      <p id="compare-status" class="status center" role="status" aria-live="polite"></p>
+      <p class="hint center">Saved after every pick.<span class="kbd-hint"> Use <span class="kbd">1</span>/<span class="kbd">2</span> or arrow keys to choose, <span class="kbd">⇧1</span>/<span class="kbd">⇧2</span> to send one to the bottom.</span></p>
     </main>
 
     <!-- Results -->
@@ -199,7 +206,7 @@
     </main>
   </div>
   <script src="config.public.js?v=2"></script>
-  <script src="ranker.js?v=1" defer></script>
-  <script src="app.js?v=50" defer></script>
+  <script src="ranker.js?v=2" defer></script>
+  <script src="app.js?v=51" defer></script>
 </body>
 </html>

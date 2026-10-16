@@ -13,6 +13,8 @@
  *   "n"  the new song (candidate being inserted) was preferred
  *   "e"  the existing song (already in the sorted list) was preferred
  *   "s"  skipped: candidate goes to the back of the queue
+ *   "d"  downvoted the candidate: it leaves the ranking and goes to the bottom
+ *   "x"  downvoted the existing song: it's pulled out of the sorted list, same fate
  *   "N" / "E"  same as n / e, answered automatically from earlier picks
  */
 (function (global) {
@@ -82,6 +84,10 @@
       /** id → Map(otherId → true if id was preferred) */
       this.known = new Map();
       this.manualCount = 0;
+      /** Downvoted ids, in the order they were downvoted; never compared again. */
+      this.down = [];
+      /** Top-N only: songs that fell below the cut, in case a downvote reopens a slot. */
+      this.dropped = [];
       this.cur = this._startNext();
       for (const ch of this.session.log) {
         if (!this.cur) break;
@@ -124,7 +130,9 @@
     _place(cur) {
       if (cur.lo < this.cap) {
         this.sorted.splice(cur.lo, 0, cur.id);
-        if (this.sorted.length > this.cap) this.sorted.length = this.cap;
+        if (this.sorted.length > this.cap) this.dropped.push(...this.sorted.splice(this.cap));
+      } else {
+        this.dropped.push(cur.id);
       }
     }
 
@@ -132,6 +140,27 @@
       const cur = this.cur;
       const mid = (cur.lo + cur.hi) >> 1;
       const other = this.sorted[mid];
+      if (ch === "d") {
+        this.down.push(cur.id);
+        this.cur = this._startNext();
+        return;
+      }
+      if (ch === "x") {
+        this.down.push(other);
+        this.sorted.splice(mid, 1);
+        cur.hi -= 1;
+        // A top-N slot opened up: songs cut earlier get another chance. Their earlier
+        // losses narrow the search, so most are re-dropped without new questions.
+        if (this.dropped.length) {
+          this.queue.push(...this.dropped);
+          this.dropped = [];
+        }
+        if (cur.lo >= cur.hi) {
+          this._place(cur);
+          this.cur = this._startNext();
+        }
+        return;
+      }
       if (ch === "s") {
         this.queue.push(cur.id);
         this.cur = this._startNext();
@@ -224,8 +253,18 @@
       this._autoAdvance();
     }
 
+    /** Send one song of the current pair to the bottom; it won't be compared again. */
+    downvote(id) {
+      const pair = this.currentPair();
+      if (!pair || (id !== pair.candidate && id !== pair.other)) return;
+      const ch = id === pair.candidate ? "d" : "x";
+      this.session.log += ch;
+      this._apply(ch);
+      this._autoAdvance();
+    }
+
     canUndo() {
-      return /[nes]/.test(this.session.log);
+      return /[nesdx]/.test(this.session.log);
     }
 
     undo() {
@@ -233,10 +272,15 @@
       while (log.length) {
         const ch = log[log.length - 1];
         log = log.slice(0, -1);
-        if (ch === "n" || ch === "e" || ch === "s") break;
+        if ("nesdx".includes(ch)) break;
       }
       this.session.log = log;
       this._rebuild();
+    }
+
+    /** Downvoted songs, in the order they were downvoted. */
+    downvoted() {
+      return [...this.down];
     }
 
     /** Final order (best first). Only meaningful once isDone(). */

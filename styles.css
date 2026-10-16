@@ -839,6 +839,28 @@ select.select-input:focus-visible {
   backdrop-filter: blur(6px);
 }
 
+.card-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.downvote-btn {
+  background: none;
+  border: none;
+  padding: 0.25rem 0.2rem;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.downvote-btn:hover {
+  color: var(--danger);
+}
+
 .preview-btn {
   align-self: flex-start;
   background: none;
@@ -1048,6 +1070,20 @@ a.rank-title:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.ranked-divider {
+  margin: 1rem 0 0.35rem;
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.ranked-item.is-downvoted {
+  opacity: 0.6;
 }
 
 .podium {
